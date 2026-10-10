@@ -94,7 +94,7 @@ func _determine_if_cell_is_empty() -> bool:
 	var opposite_corner := offset + Vector3(axis_length, axis_length, axis_length)
 	var minimum_distance: float = scalar.center.clamp(offset, opposite_corner).distance_to(scalar.center)
 	var min_bias: float = scalar.get_bias_from_distance(minimum_distance)
-	if min_bias > scalar.bias_threshold: mesh_data = null; return true
+	if min_bias > scalar.air_threshold: mesh_data = null; return true
 
 	var max_x: float = abs(offset.x - scalar.center.x)
 	var min_x: float = abs((offset.x + (size) * lod_step) - scalar.center.x)
@@ -115,7 +115,7 @@ func _determine_if_cell_is_empty() -> bool:
 	else: zm = min_z
 
 	var max_bias := scalar.get_bias_from_distance(sqrt(xm * xm + ym * ym + zm * zm))
-	if max_bias < -scalar.bias_threshold: mesh_data = null; return true
+	if max_bias < scalar.rock_threshold: mesh_data = null; return true
 
 	return false
 

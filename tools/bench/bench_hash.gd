@@ -10,9 +10,7 @@ func _process(_d: float) -> bool:
 	if started: return false
 	started = true
 	root.get_node("Utils").debug = false
-	var cont: Curve = load("res://environment/world-generation/slope_curves/default_continent_curve.tres")
-	var mount: Curve = load("res://environment/world-generation/slope_curves/default_mountain_curve.tres")
-	var noise = load("res://environment/world-generation/world-noise.gd").new(1, 2048.0, 524, 0, cont, mount)
+	var noise = load("res://environment/world-generation/world-noise.gd").new(1, 2048.0, load("res://environment/world-generation/terrain-params.gd").new())
 	var ChunkS: GDScript = load("res://environment/world-generation/chunk.gd")
 	var dirs := [Vector3(0.577, 0.577, 0.577), Vector3(0.9, 0.3, 0.1), Vector3(0.1, 0.95, 0.3), Vector3(0.3, 0.2, 0.93), Vector3(-0.7, 0.5, 0.5), Vector3(0.2, -0.8, 0.5)]
 	var total := PackedByteArray()

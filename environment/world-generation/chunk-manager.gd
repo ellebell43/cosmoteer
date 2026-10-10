@@ -154,7 +154,7 @@ func _init(_player: Player, _seed: int, _max_octree_depth: int, _noise: WorldNoi
 	self.max_octree_depth = _max_octree_depth
 	self.chunk_count = int(pow(2, max_octree_depth))
 	self.noise = _noise
-	if _noise != null: occluder_radius = _noise.sea_level - _noise.bias_threshold / WorldNoise.FLOOR_BIAS
+	if _noise != null: occluder_radius = _noise.solid_radius
 	self.player = _player
 	self.root_node_size = int(CHUNK_SIZE * pow(2, max_octree_depth))
 	self.is_current_world = _is_current_world

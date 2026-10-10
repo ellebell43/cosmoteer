@@ -30,10 +30,8 @@ func _get_field_normal(v):
 """ % CH
 	CountingChunkS.reload()
 
-	var cont: Curve = load("res://environment/world-generation/slope_curves/default_continent_curve.tres")
-	var mount: Curve = load("res://environment/world-generation/slope_curves/default_mountain_curve.tres")
 	var volume := 2048.0
-	var noise = WorldNoiseS.new(1, volume, 524, 0, cont, mount)
+	var noise = WorldNoiseS.new(1, volume, load("res://environment/world-generation/terrain-params.gd").new())
 
 	# ---------- 1. raw cost of noise calls ----------
 	var pts := PackedVector3Array()
@@ -90,7 +88,7 @@ func _get_field_normal(v):
 				tris += mesh.surface_get_array_len(0) / 3
 			if n == 0: continue
 			# call counts on one chunk with the counting noise/chunk
-			var cn = _counting_noise(cont, mount, volume)
+			var cn = _counting_noise(volume)
 			var sp0: Vector3 = surface_pts[0]
 			var span0: float = 16.0 * lod
 			var off0 := Vector3(floor(sp0.x / span0), floor(sp0.y / span0), floor(sp0.z / span0)) * span0
@@ -104,7 +102,7 @@ func _get_field_normal(v):
 			print("%3d | %4d | %5d | %13.2f | %11.2f | %8.2f | %s" % [lod, mask, tris / n, sum_set / n / 1000.0, sum_mesh / n / 1000.0, (sum_set + sum_mesh) / n / 1000.0, counts])
 	quit()
 
-func _counting_noise(cont, mount, volume):
+func _counting_noise(volume):
 	var s := GDScript.new()
 	s.source_code = """extends "%s"
 var n_sample := 0
@@ -120,4 +118,4 @@ func get_biome_color(p):
 	return super.get_biome_color(p)
 """ % WN
 	s.reload()
-	return s.new(1, volume, 524, 0, cont, mount)
+	return s.new(1, volume, load("res://environment/world-generation/terrain-params.gd").new())
