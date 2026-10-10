@@ -5,25 +5,25 @@ extends Node3D
 @export var player: Player
 ## Determines the world that is generated
 @export var world_seed: int = 1
-## ChunkManager.CHUNK_SIZE * 2^size = total_volume. total_volume / 2 - 500 = surface radius. size = max_octree_depth in the ChunkManager. (ChunkManager.CHUNK_SIZE = 16). Max terrain height = 2000 above surface radius
-@export_range(7, 19) var size := 7
-# |  size | volume in meters | True  diameter |
-# | ----- | =================| ===============|
-# | 5     | 512              | -              |
-# | 6     | 1,024            | 24             |
-# | 7     | 2,048            | 1,048 <-min    |
-# | 8     | 4,096            | 3,096          |
-# | 9     | 8,192            | 7,196          |
-# | 10    | 16,384           | 15,384         |
-# | 11    | 32,769           | 31,769         |
-# | 12    | 65,536           | 64,536         |
-# | 13    | 131,072          | 130,072        |
-# | 14    | 262,144          | 261,144        |
-# | 15    | 524,288          | 523,288        |
+## ChunkManager.CHUNK_SIZE * 2^size = total_volume. total_volume / 2 - 500 = surface radius. size = max_octree_depth in the ChunkManager. (ChunkManager.CHUNK_SIZE = 16). Max terrain height = 2000 above surface radius. The maximum is set by physics, not by chunk count: with a 20 minute day the surface of a size 14 planet moves at 684 m/s and walking on it stays smooth, while at size 15 (1,370 m/s) the player's `move_and_slide` against the moving colliders makes 4 of 10 test locations hitch, and by size 17 (5.5 km/s) it is unplayable. See `tools/bench/check_physics_hitches.gd`.
+@export_range(7, 14) var size := 7
+# |  size | volume in meters | True  diameter | Surface speed, 20 min day |
+# | ----- | =================| ===============| ========================= |
+# | 5     | 512              | -              | -                         |
+# | 6     | 1,024            | 24             | -                         |
+# | 7     | 2,048            | 1,048 <-min    | 2.7 m/s                   |
+# | 8     | 4,096            | 3,096          | 8 m/s                     |
+# | 9     | 8,192            | 7,196          | 19 m/s                    |
+# | 10    | 16,384           | 15,384         | 42 m/s                    |
+# | 11    | 32,769           | 31,769         | 83 m/s                    |
+# | 12    | 65,536           | 64,536         | 169 m/s                   |
+# | 13    | 131,072          | 130,072        | 341 m/s                   |
+# | 14    | 262,144          | 261,144        | 684 m/s <-max             |
+# | 15    | 524,288          | 523,288        | 1,370 m/s                 |
 # | 20    | 16,777,216       | <- Earth is ~12,756,000
 
-## How quickly the planet rotates in radians/sec
-@export var rotation_speed := 0.004
+## Real-time minutes for one full day/night cycle: the planet makes one turn in this time. The turn rate is the same on every planet, so the surface speed (`angular_speed * radius`) grows with the planet's size. Physics gets into trouble when that gets too high (see `size`).
+@export_range(20, 30) var day_length_minutes: int = 25
 ## The axis that the planet spins on
 @export var rotation_axis := Vector3(randf(), randf(), randf()).normalized()
 ## how far above/below the "floor_distance" the sea level should be
@@ -41,6 +41,9 @@ extends Node3D
 ## Reference to the local ChunkManager for this planet.
 var chunk_manager: ChunkManager
 var world_noise: WorldNoise
+## How quickly the planet rotates in radians/sec, derived from `day_length_minutes`
+var angular_speed: float:
+	get: return TAU / (day_length_minutes * 60.0)
 ## The size of the total noise volume on each axis. Determined by size: Vector3(20 * 2^size)
 var total_volume: Vector3
 ## The general diameter of the planet mesh: (20 * 2^size) / 2
@@ -117,8 +120,8 @@ func get_valid_spawn_point() -> Vector3:
 	return get_valid_spawn_point()
 
 func _physics_process(delta: float) -> void:
-	# Rotate planet along the rotation_axis by the rotation_speed
-	self.global_rotate(rotation_axis, rotation_speed * delta)
+	# Rotate planet along the rotation_axis by the angular_speed
+	self.global_rotate(rotation_axis, angular_speed * delta)
 
 func _on_gravity_area_body_entered(body: Node3D) -> void:
 	if body is Player:

@@ -29,10 +29,10 @@ func _physics_process(delta):
 	# if the player is at a world, calculate a tangential velocity (applied later) to lock the player to the planets rotation. Also rotate the player according to the planet's spin
 	var planet_rotation_v: Vector3
 	if current_world:
-		var angular_velocity_vector := current_world.rotation_axis * current_world.rotation_speed
+		var angular_velocity_vector := current_world.rotation_axis * current_world.angular_speed
 		var displacement_vector := self.global_position - current_world.global_position
 		planet_rotation_v = angular_velocity_vector.cross(displacement_vector)
-		self.global_rotate(current_world.rotation_axis, current_world.rotation_speed * delta)
+		self.global_rotate(current_world.rotation_axis, current_world.angular_speed * delta)
 	
 	# orient player with planets surface
 	var target_basis := get_planet_aligned_basis()

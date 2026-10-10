@@ -21,7 +21,7 @@ System (environment/system.gd, Node3D)
 ```
 
 - **System**: waits for the spawn planet's first batch of chunks (loading progress bar), then un-freezes the player (`ready_for_player`) and frees the loading screen.
-- **Planet**: owns the `WorldNoise` and creates its `ChunkManager` in `_ready()`. Rotates itself each physics frame around `rotation_axis`. Its `GravityArea` tells the player when they enter/leave (`current_world`) and flips `is_current_world`.
+- **Planet**: owns the `WorldNoise` and creates its `ChunkManager` in `_ready()`. Rotates itself each physics frame around `rotation_axis`, once per `day_length_minutes` (export, 20–30; `angular_speed` is derived from it). Its `GravityArea` tells the player when they enter/leave (`current_world`) and flips `is_current_world`.
 - **ChunkManager**: created in code (`ChunkManager.new(...)`), positioned at `-total_volume / 2` so the planet's centre sits at the Planet node's origin. Owns all chunks for that planet.
 - **Chunk**: one cube of terrain at one LOD, owns its mesh data and thread id. It only joins the scene tree once it has a mesh (empty chunks and chunks hidden by the planet exist as data only). `build_mesh()` adds a `ChunkMesh` child with a shared material; only `lod_step == 1` chunks get a trimesh collider (collision layer 2 "Planet", mask 1 "Player"), so distant terrain has no physics cost.
 - **WorldNoise** (`RefCounted`): pure scalar-field function; no scene presence. Shared by the planet's spawn search and its chunks.
@@ -34,7 +34,7 @@ System (environment/system.gd, Node3D)
 
 ## Planet size
 
-`size` (export, 7–19) is the octree depth. `volume_length = CHUNK_SIZE * 2^size`; `floor_distance` (surface radius) is `volume_length / 2 - 500`; gravity extends 1000 m past the surface. Terrain can rise up to ~2000 above the surface radius. See the table in `planet.gd`.
+`size` (export, 7–14) is the octree depth. `volume_length = CHUNK_SIZE * 2^size`; `floor_distance` (surface radius) is `volume_length / 2 - 500`; gravity extends 1000 m past the surface. Terrain can rise up to ~2000 above the surface radius. See the table in `planet.gd`.
 
 ## Signals / global state
 

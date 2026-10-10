@@ -111,6 +111,24 @@ What mattered, in order:
 - Mesh creation (`ArrayMesh.add_surface_from_arrays`) on workers is serialized behind a mutex: with many threads creating meshes at once, `stress_move.gd` crashed the engine in ~6% of runs (0 of 60 with the mutex). The rest of chunk generation is not serialized.
 - `ChunkManager._exit_tree()` waits for its tasks; workers use the manager's members, so none may outlive it.
 
+## Planet size and physics
+
+The chunk pipeline scales to size 19: leaves grow by about 480 and meshes by about 125 per size step (the octree already makes chunks coarser with distance, so it is its own render distance), and rendering stays at about 540 draw calls. What does not scale is the player's physics on a rotating planet. A day lasts `day_length_minutes` (20–30) on every planet, so the surface speed is `angular_speed * radius` (684 m/s at size 14, 20 minute day; 21,959 m/s at size 19). The player is carried with the surface by adding that speed to its velocity, so `move_and_slide()` sweeps tens to hundreds of meters per physics tick against the trimesh colliders.
+
+Measured in the real scene (`tools/bench/check_physics_hitches.gd`, headless, player standing on the ground, 20 minute day, 10 spawn locations per size; "step cost" is the time a frame containing a physics step takes beyond a bare frame, bare frame 6.9 ms):
+
+| Size | Surface speed | Step cost, avg of runs | Worst p95 | Locations with frames over 16.7 ms |
+|---|---|---|---|---|
+| 12 | 169 m/s | 3.2–4.6 ms | 6.0 ms | 0 of 4 |
+| 13 | 341 m/s | 3.0–4.2 ms | 5.2 ms | 0 of 4 |
+| **14** | 684 m/s | 2.9–5.8 ms | 8.4 ms | **0 of 10** |
+| 15 | 1,370 m/s | 3.8–10.0 ms | 16.5 ms | 4 of 10 (8–297 of 1,450 frames) |
+| 16 | 2,743 m/s | 6.1–8.5 ms | 14.3 ms | 3 of 4 (48–193 frames) |
+| 17 | 5,488 m/s | 8.0–138 ms | 177 ms | 3 of 3 (28 to all 70 frames) |
+| 19 | 21,959 m/s | the test can't finish | | 332 ms per frame while hovering |
+
+Without rotation a standing player costs about 4.3 ms per step at any size. Size 14 is the largest size without hitches at a 20 minute day, so that is the maximum of `Planet.size`. A 30 minute day lowers the surface speed by a third (size 15 at 30 minutes, 913 m/s, was borderline: 1 frame in 1,452 over budget at one location), but the limit is set for the shortest day. Walking costs more than hovering, and the cost depends on the terrain under the player (more triangles to sweep through), which is why the locations differ. Carrying the player by rotating its position instead of adding to its velocity roughly halved the cost at size 19 (332 → 153 ms) but did not fix it, so the real lever would be to stop moving colliders relative to the player (for example by simulating the player in the planet's frame).
+
 Still open:
 
 - Even after batching, per-chunk cost is dominated by `WorldNoise` sampling (4–6 native calls per point) and per-vertex `get_biome_color()` (6 native calls). Deriving colour from the surface distance, a baked table for the `Curve`s, or a native/GPU noise pass would remove most of it, at the cost of slightly different values or a native toolchain.
@@ -118,4 +136,4 @@ Still open:
 - **Pre-existing:** the first octree pass runs before the planet is flagged `is_current_world`, so it produces only the coarse root chunk. The loading screen therefore finishes after one task and releases the player, who falls through the coarse chunk until they have moved 10 m and the detailed terrain starts. `tools/bench/check_game_scene.gd` works around it by keeping the player in fly mode. (After that, ground collision appears ~3 s later; it took ~11 s with the original manager.)
 - Transition cells fix seams across *faces* only. Chunks of different LOD that share just a corner or edge can still leave cracks (issue #5).
 - Non-current planets only keep a single root chunk (cheap), but check the transition when a planet becomes current.
-- Scale: planets up to size 19 are allowed; large sizes stress float precision, which is why the project uses the double-precision Godot build.
+- Scale: planets are limited to size 14 by physics, not by chunk count (see "Planet size and physics" below). Large sizes also stress float precision, which is why the project uses the double-precision Godot build.
