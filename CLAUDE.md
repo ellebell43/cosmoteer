@@ -37,7 +37,7 @@ Custom slash commands live in `.claude/commands/`: `/explain`, `/review`, `/opti
 
 ```
 actors/        Player (CharacterBody3D) scene + script
-environment/   System scene/script; world-generation/ (Planet, ChunkManager, Chunk, WorldNoise, transvoxel LUT, slope_curves/)
+environment/   System scene/script; world-generation/ (Planet, TerrainParams, WorldNoise, ChunkManager, Chunk, transvoxel LUT)
 interface/     Start screen, debug overlay
 assets/ blender/   Art sources (human-made originals; don't overwrite)
 docs/          Topic docs (imported above)

@@ -21,10 +21,10 @@ System (environment/system.gd, Node3D)
 ```
 
 - **System**: waits for the spawn planet's first batch of chunks (loading progress bar), then un-freezes the player (`ready_for_player`) and frees the loading screen.
-- **Planet**: owns the `WorldNoise` and creates its `ChunkManager` in `_ready()`. Rotates itself each physics frame around `rotation_axis`, once per `day_length_minutes` (export, 20–30; `angular_speed` is derived from it). Its `GravityArea` tells the player when they enter/leave (`current_world`) and flips `is_current_world`.
+- **Planet**: owns the `WorldNoise`, built from its `terrain` (`TerrainParams`, one resource per planet), and creates its `ChunkManager` in `_ready()`. Rotates itself each physics frame around `rotation_axis`, once per `day_length_minutes` (export, 20–30; `angular_speed` is derived from it). Its `GravityArea` tells the player when they enter/leave (`current_world`) and flips `is_current_world`.
 - **ChunkManager**: created in code (`ChunkManager.new(...)`), positioned at `-total_volume / 2` so the planet's centre sits at the Planet node's origin. Owns all chunks for that planet.
 - **Chunk**: one cube of terrain at one LOD, owns its mesh data and thread id. It only joins the scene tree once it has a mesh (empty chunks and chunks hidden by the planet exist as data only). `build_mesh()` adds a `ChunkMesh` child with a shared material; only `lod_step == 1` chunks get a trimesh collider (collision layer 2 "Planet", mask 1 "Player"), so distant terrain has no physics cost.
-- **WorldNoise** (`RefCounted`): pure scalar-field function; no scene presence. Shared by the planet's spawn search and its chunks.
+- **WorldNoise** (`RefCounted`): pure scalar-field function; no scene presence. Shared by the planet's spawn search and its chunks. Built from a `TerrainParams` (`Resource`): the exported, range-limited terrain tunables (continents, mountains, hills, detail, overhang).
 - **Player**: has `spawn_world: Planet`, `current_world`, `fly_mode`, `allow_inputs`. Must be below all Planets in the tree, because `Planet.get_valid_spawn_point()` needs the planet ready first. Orients itself to gravity every physics frame (`get_planet_aligned_basis`, slerped).
 - **Debug**: overlay showing FPS, active chunk count, player coordinates relative to the current planet, and the ChunkManager timing snapshot. Reads `player.current_world.chunk_manager`.
 
@@ -34,7 +34,7 @@ System (environment/system.gd, Node3D)
 
 ## Planet size
 
-`size` (export, 7–14) is the octree depth. `volume_length = CHUNK_SIZE * 2^size`; `floor_distance` (surface radius) is `volume_length / 2 - 500`; gravity extends 1000 m past the surface. Terrain can rise up to ~2000 above the surface radius. See the table in `planet.gd`.
+`size` (export, 7–14) is the octree depth. `volume_length = CHUNK_SIZE * 2^size`; `floor_distance` (the sea radius, elevation 0) is `volume_length / 2 - margin` where the margin is at least 500 m and grows with the tallest possible terrain (`WorldNoise.get_limits()`), so the terrain always fits in the volume; gravity extends 1000 m past the sea radius. Terrain height is limited to about 12% of the radius and to what the feature size can carry (see `docs/world-generation.md`). See the table in `planet.gd`.
 
 ## Signals / global state
 
@@ -54,8 +54,8 @@ Seasons/axial tilt, survival metrics, gardening, ships, teleporters, inter-syste
 ## Open questions / known rough edges
 
 (Edit as decisions are made.)
-- `Planet.get_valid_spawn_point()` recurses (capped by `n_tries == 5`, but the counter is only checked after a failed pass) and has an ordering requirement (player after planets). It samples `WorldNoise` directly because the ChunkManager may not exist yet.
+- `Planet.get_valid_spawn_point()` has an ordering requirement (player after planets). It samples `WorldNoise` directly because the ChunkManager may not exist yet.
 - The Player's `current_world` setter also sets `is_current_world`, and the Planet's gravity-area signals set both as well. Two writers for one piece of state.
 - Planet-rotation handling lives in the Player (see above); there is no shared mechanism for other bodies yet.
 - LODs that meet only at a corner (not a face) still show seams, see issue #5 and the README of PR #8.
-- `WorldNoise.USE_GRADIENT` biome colouring is marked WIP/broken.
+- `WorldNoise.get_biome_color()` is a placeholder (elevation bands); real biomes are still to be built on top of the terrain shape.

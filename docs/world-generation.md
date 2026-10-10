@@ -4,7 +4,7 @@ Code lives in `environment/world-generation/`.
 
 ## Pipeline overview
 
-1. `Planet._ready()` builds a `WorldNoise` from `world_seed`, volume size, `floor_distance`, `sea_level_modifier`, and the two `Curve` resources (`continent_curve`, `mountain_curve`; defaults in `slope_curves/`).
+1. `Planet._ready()` builds a `WorldNoise` from `world_seed`, the volume size and the planet's `terrain` (`TerrainParams`). `WorldNoise` decides the sea radius (`floor_distance`) because the volume has to leave room for the tallest terrain.
 2. `ChunkManager` runs an **octree** over the noise volume. Cells near the player split into finer cells; far cells stay coarse. Each leaf is a chunk key `Vector4i(x, y, z, lod_step)`. The octree and each leaf's transition mask are computed on a **worker thread** into a fresh dictionary (`_compute_leaf_set()`); the main thread swaps it into `new_chunk_set` when done.
    After the masks, `_apply_cull()` flags every leaf that the planet hides from the player with `CULLED_BIT` (64, above the 6 mask bits) in the leaf's value. See "Culling" below.
 3. Each leaf becomes a `Chunk`. Chunks that can never have a mesh (`Chunk.is_provably_empty()`, an O(1) bounds test) are ACTIVE immediately and never get a task or a scene node. For the others, mesh data is generated on a `WorkerThreadPool` thread using **Transvoxel** (Marching Cubes + transition cells for LOD seams).
@@ -12,17 +12,40 @@ Code lives in `environment/world-generation/`.
 
 ## WorldNoise: the scalar field
 
-`sample(x, y, z)` returns `shell_bias - elevation * FLOOR_BIAS`. The surface is where it crosses 0.
+`sample(x, y, z)` returns `(distance_from_center - sea_level - elevation(p)) * FLOOR_BIAS`: positive in air, negative in rock, 0 on the surface. The whole field is 3D noise on top of a sphere; there is no heightmap. `elevation(p)` is the sum of layers (all heights in meters above `sea_level`, the sea radius):
 
-- `shell_bias = (distance_from_center - sea_level) * FLOOR_BIAS`: turns the volume into a sphere.
-- `get_elevation_at_point`:
-  - `continent_noise` (Perlin FBM, low freq) → run through `continent_curve` → `base_elevation`
-  - `mountain_noise` (ridged simplex) scaled by `mountain_curve.sample(base_elevation)` × `MOUNTAIN_AMPLITUDE`, so mountains only appear at elevations the curve allows
-  - plus small `hill_noise` and `detail_noise` terms
-- `get_biome_color` maps elevation bands to vertex colours (deep water → water → sand → grass → rock).
-- `bias_threshold`: derived in `WorldNoise._init()` from the curves and amplitudes (a bound on |elevation| × `FLOOR_BIAS`). Used by `Chunk._determine_if_cell_is_empty()` to skip sampling cells that are certainly all-air/all-solid. `sample_grid()` samples a whole chunk grid in one call.
+| Layer | Noise | Sampled at | Controlled by |
+|---|---|---|---|
+| Continents: ocean floor and lowland | simplex FBM, wavelength `2πR / continent_count` (scales with the planet) | radially coherent point | `continent_count`, `ocean_coverage`, `ocean_depth`, `coast_sharpness` |
+| Mountain ranges (where) | simplex FBM, wavelength 4 × `mountain_scale` | radially coherent point | `mountain_coverage` |
+| Mountains (shape) | ridged simplex, 5 octaves, weighted, native domain warp, wavelength `mountain_scale` (fixed meters) | radially coherent point | `peak_height`, `mountain_scale`, `ridge_sharpness`, `erosion`, `mountain_warp`, `terracing` |
+| Hills | simplex FBM, wavelength `hill_scale` (fixed meters), faded out on plains | true 3D point (plains mask: coherent point) | `hill_height`, `hill_scale`, `plains_fraction` |
+| Detail | simplex FBM, wavelength 12 m | true 3D point | `detail_height` |
+| Overhang (optional) | simplex, wavelength about 0.6 × mountain height | true 3D point | `overhang` |
 
-Tuning knobs: noise frequencies/octaves in `WorldNoise._init`, the amplitude constants, and the two curves. Curve domains/ranges are documented on the `@export` vars in `planet.gd`.
+All of these are fields of `TerrainParams` (`terrain-params.gd`, a `Resource` assigned to `Planet.terrain`), each with an explicit `@export_range`. `TerrainParams.randomize_values()` draws a planet from the ranges, and is what the topology check uses.
+
+### Why the old field folded, and how this one does not
+
+The surface is where `r = sea_level + E(p)`, and `E` is evaluated at the surface point, so it also changes with `r`. When `dE/dr` exceeds 1 somewhere, the field is no longer monotonic along a radius and the surface folds: overhangs, floating pockets, leaning peaks. The old field had `dE/dr` up to 6 (a 10 m mountain term at a 33 m wavelength, and a continent curve with a slope of 86 m per noise unit). The new one stays below 1 by construction:
+
+- **Radial coherence** (`radial_coherence`, default 0.75): the continent, mountain-placement, mountain and plains noise are sampled at `center + dir * ((1 - c) * r + c * sea_level)`, so their radial gradient is only `(1 - c)` of the full one. Hills, detail and overhang use the true point.
+- **Slope budget** (`WorldNoise.get_limits()`): every layer's height is capped by its wavelength, from measured noise gradients (Godot's simplex: 99.9th percentile of `|grad| * wavelength` is about 6, ridged x5 about 16, and a domain warp, terracing and sharp ridges steepen it more). Examples: hills at most 5% of `hill_scale`, mountains about `0.05 / (1 - c)` of `mountain_scale` (divided by factors for warp, terracing, erosion and sharpness), the continent profile limited by the continent wavelength and the share of the surface it spans (small planets get shallower oceans). The values that came out are in `effective_*` (`effective_peak_height`, `effective_mountain_height`, ...), the exports are requests. Every constant has a comment with how it was measured.
+- **Soft masks**: mountain ranges and plains fade over a wide rank range (`MASK_EDGE_SHARE`). A sharp mask multiplies a tall mountain by a quickly changing value, which is steep. Mountain ranges do not depend on the coast for the same reason, so some stand in the sea as islands.
+- **Hard bounds**: every layer is clamped to its declared range, so `min_elevation` and `max_elevation` are real bounds (`check_elevation_bound.gd`).
+
+The topology check (`tools/bench/check_terrain_topology.gd`) casts radial rays and counts surface crossings: with `overhang` 0, 0 of ~1,350 parameter sets (defaults, random, and all corners of the ranges, sizes 7 to 12) had a ray with more than one crossing. Raising `MOUNTAIN_RADIAL_SLOPE` to 0.07 broke that, which is how 0.05 was chosen. With `overhang` > 0, `tools/bench/check_floating_rock.gd` flood-fills a box around the tallest mountain: rock stays in one piece up to about 0.25 and a tiny hollow pocket can appear at 0.3 (the top of the range). Beyond that, detached rock appears.
+
+### Calibration and cost
+
+At construction `_calibrate()` samples every noise at 4,096 points on the sea sphere and builds a 1,024-entry table per layer that maps a noise value straight to a height or mask (`_base_table`, `_mask_table`, `_rugged_table`, `_ridge_table`). That makes `ocean_coverage`, `mountain_coverage` and `plains_fraction` real fractions of the surface whatever the noise settings are, and removes the per-point `Curve`/`pow` calls. `_compute_row()` is the single implementation of the field: it computes a whole row along z with everything in locals, and `sample()`, `sample_grid()` and `get_elevation_at_point()` all call it. Measured (debug build, one thread, default planet): 1.45 us per grid point (the old field: 0.57 us), 7.1 ms per chunk sample set (old 2.8 ms), chunk generation in `bench_manager.gd` unchanged at ~12 ms per chunk and the initial load of size 7 at 3.3 s (3.4 s before). The GDScript glue (table reads, row bookkeeping), not the native noise, is the remaining cost.
+
+### Bounds and the volume
+
+- `max_elevation` / `min_elevation`: bounds of `elevation`. `air_threshold` / `rock_threshold` (`* FLOOR_BIAS`) are what `Chunk._determine_if_cell_is_empty()` compares against: a cell whose closest point to the center is further than the first is all air, one whose farthest point is closer than the second is all rock. `solid_radius = sea_level + min_elevation` is the always-solid ball used by the horizon culling.
+- The volume margin is `max(500, max_elevation + 200)` (200 for the sea level offset and clearance), `sea_level = volume / 2 - margin + sea_level_offset`. With the defaults the margin is 500 m, as before.
+- `get_biome_color(pos)` takes the elevation from the distance to the center (a surface vertex sits at `sea_level + elevation`), so it needs no noise. The colour bands (deep water, water, sand, grass, rock) scale with the planet's elevation range. It is a placeholder until biomes exist.
+- `Planet.get_valid_spawn_point()` picks random directions, walks down from above the highest possible terrain to the first rock, bisects, and accepts dry land (at least 2 m above the sea). Up to 100 tries.
 
 ## Chunk lifecycle
 
@@ -44,7 +67,7 @@ Culled chunks are ACTIVE (see "Culling"). ChunkManager keeps one dictionary per 
 
 Leaves the player can not see are flagged with `CULLED_BIT` in `new_chunk_set` (by `_apply_cull()` on the leaf-job worker, current world only; other planets keep their single root chunk). Two tests, both conservative on the leaf's bounding sphere:
 
-- **Horizon** (`is_hidden(camera_pos, key, margin)`): the leaf lies wholly in the shadow of the planet's solid inner ball, radius `occluder_radius = sea_level - bias_threshold / FLOOR_BIAS` (the surface is never closer to the centre; 72 m below sea level with the default curves). It has to sit inside the cone of view rays that touch the ball, behind the circle where they touch it.
+- **Horizon** (`is_hidden(camera_pos, key, margin)`): the leaf lies wholly in the shadow of the planet's solid inner ball, radius `occluder_radius = WorldNoise.solid_radius` (`sea_level + min_elevation`: the surface is never closer to the centre; 25 m below sea level at size 7 with the default `TerrainParams`, 90 m at size 10, where the oceans can be deeper). It has to sit inside the cone of view rays that touch the ball, behind the circle where they touch it.
 - **Far plane** (`is_beyond_view()`): the leaf is further than `_get_cull_distance()` from the camera. That is the distance to the *corners* of the far plane (`far * sqrt(1 + tan_x² + tan_y²)`, 7,429 m for the default camera at 16:9), because the camera can turn: a plain `far` would cull chunks that are visible in a corner of the screen. Read from `player.camera` (far, fov, keep-aspect) and the viewport; falls back to Camera3D's defaults when there is no camera. INF for a non-perspective camera.
 
 Both tests assume the camera may be anywhere within `margin` of the player, and give up (cull nothing) when the camera is within the margin of the ball or of the leaf.
@@ -105,7 +128,7 @@ What mattered, in order:
 - **Call count, not arithmetic, limits worker throughput.** In the debug build every GDScript/native call is contended across threads; chunk generation topped out at ~1.6× speedup no matter how many cores (`bench_parallel.gd`, `bench_calls.gd`). In a release build typed calls scale, untyped native-object calls still do not. So: batch (`WorldNoise.sample_grid()`), keep object variables typed, avoid per-vertex calls.
 - Transition cells: `Chunk._apply_shift()` only does the (6-sample) field-normal lookup for points that are actually shifted, caches them, and `transition_samples` are slices of `corner_samples`, not new samples.
 - Biome colour is computed once per cell vertex, not per triangle corner. (Winding-inverted transition triangles keep their colours in a, b, c order, as before.)
-- The mountain noise is skipped where its mask is exactly 0. `WorldNoise.bias_threshold` is derived from the curves, so more empty chunks are rejected without sampling (`tools/bench/check_elevation_bound.gd` checks the bound).
+- The mountain and hill noise are skipped where their masks are exactly 0. `WorldNoise.min_elevation` / `max_elevation` bound the field, so empty chunks are rejected without sampling (`tools/bench/check_elevation_bound.gd` checks the bounds).
 - The main thread never polls pending tasks: cost scales with finished chunks. The leaf job and the reconcile are off the frame's critical path or time-sliced.
 - Workers must not touch typed `Array`s of Nodes (type validation calls `get_script()`), so the finished-chunk queue is untyped. Physics-server calls (`create_trimesh_collision`) stay on the main thread: `physics/3d/run_on_separate_thread` is off.
 - Mesh creation (`ArrayMesh.add_surface_from_arrays`) on workers is serialized behind a mutex: with many threads creating meshes at once, `stress_move.gd` crashed the engine in ~6% of runs (0 of 60 with the mutex). The rest of chunk generation is not serialized.
@@ -131,7 +154,7 @@ Without rotation a standing player costs about 4.3 ms per step at any size. Size
 
 Still open:
 
-- Even after batching, per-chunk cost is dominated by `WorldNoise` sampling (4–6 native calls per point) and per-vertex `get_biome_color()` (6 native calls). Deriving colour from the surface distance, a baked table for the `Curve`s, or a native/GPU noise pass would remove most of it, at the cost of slightly different values or a native toolchain.
+- Even after batching, per-chunk cost is dominated by `WorldNoise` sampling (up to 7 native noise calls per point, plus the GDScript around them, see "Calibration and cost"). Colour from the surface distance and baked tables are done. What is left is skipping noise far from the surface (a cheap bound from the continent and mask layers first), fewer octaves, or a native/GPU noise pass.
 - The first reconcile (the whole initial leaf set) is not time-sliced: ~100 ms behind the loading screen.
 - **Pre-existing:** the first octree pass runs before the planet is flagged `is_current_world`, so it produces only the coarse root chunk. The loading screen therefore finishes after one task and releases the player, who falls through the coarse chunk until they have moved 10 m and the detailed terrain starts. `tools/bench/check_game_scene.gd` works around it by keeping the player in fly mode. (After that, ground collision appears ~3 s later; it took ~11 s with the original manager.)
 - Transition cells fix seams across *faces* only. Chunks of different LOD that share just a corner or edge can still leave cracks (issue #5).
