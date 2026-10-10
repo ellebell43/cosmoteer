@@ -1,7 +1,8 @@
 extends SceneTree
-## Invariants of horizon culling (`ChunkManager.is_hidden()` / `_apply_cull()`), on the real field.
+## Invariants of culling (`ChunkManager.is_hidden()`, `is_beyond_view()`, `_apply_cull()`), on the real field.
 ##   godot --headless --path . -s tools/bench/check_cull.gd
-## 1. Safety: from camera positions anywhere within CULL_MARGIN of the player, a ray to a real surface point inside a culled leaf is blocked by the real terrain.
+## 1. Safety, horizon: from camera positions anywhere within the margin of the player, a ray to a real surface point inside a leaf culled by the horizon test is blocked by the real terrain.
+## 1b. Safety, far plane: no point of a leaf culled by the far-plane test is inside the frustum of a camera anywhere within the margin, however it is turned.
 ## 2. No leaf near the player is culled, nothing is culled with the camera inside the occluding ball, and culling does not change the leaves or their transition masks.
 const CHUNK := 16
 var started := false
@@ -19,6 +20,11 @@ func _process(_d: float) -> bool:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 11
 	var failures := 0
+	var far_points := 0
+	var far_culled_total := 0
+	var camera := Camera3D.new()
+	camera.far = 4000.0
+	root.add_child(camera)
 	var rays := 0
 	var culled_total := 0
 	for depth in [7, 9, 12]:
@@ -31,7 +37,6 @@ func _process(_d: float) -> bool:
 		root.add_child(player)
 		var mgr = mgr_script.new(player, 1, depth, noise, true)
 		root.add_child(mgr)
-		var margin: float = mgr.CULL_MARGIN
 		var depth_rays := 0
 		var depth_target := 400 if depth <= 9 else 40
 		for trial in 40:
@@ -39,7 +44,11 @@ func _process(_d: float) -> bool:
 			var altitude: float = [2.0, 2.0, 50.0, 400.0, -0.7 * floor_distance][trial % 5]
 			var surface := _surface_radius(noise, center, dir, floor_distance, max_e)
 			var p: Vector3 = center + dir * (surface + altitude if altitude > 0.0 else floor_distance + altitude)
-			var leaves: Dictionary = mgr._compute_leaf_set(p, true)
+			# every other trial pretends the player is flying fast, which widens the margin
+			mgr.player_speed = 0.0 if trial % 2 == 0 else 40.0
+			var margin: float = mgr.get_cull_margin()
+			var cull_distance: float = mgr._get_cull_distance()
+			var leaves: Dictionary = mgr._compute_leaf_set(p, true, margin, cull_distance)
 			# the same octree and masks without culling
 			var plain: Dictionary[Vector4i, int] = {}
 			mgr._octree_iterate(plain, p)
@@ -55,9 +64,35 @@ func _process(_d: float) -> bool:
 				var corner_center := Vector3(key.x, key.y, key.z) + Vector3(side, side, side) / 2.0
 				if p.distance_to(corner_center) - side * 0.8660254 < 2 * CHUNK:
 					failures += 1; print("FAIL depth %d: culled leaf %s within %d m of the player" % [depth, key, 2 * CHUNK])
-				if altitude < 0.0:
-					failures += 1; print("FAIL depth %d: leaf culled with the camera inside the planet" % depth); break
-				# real surface points inside the culled leaf, seen from the player and from positions up to the margin away
+				if altitude < 0.0 and mgr.is_hidden(p, key, margin):
+					failures += 1; print("FAIL depth %d: leaf hidden by the horizon with the camera inside the planet" % depth); break
+				if mgr.is_beyond_view(p, key, margin, cull_distance):
+					far_culled_total += 1
+					if rng.randf() < 0.3:
+						# the corner of the frustum is the furthest it reaches: aim the camera so that the point is near it
+						var view_size := root.get_visible_rect().size
+						var tan_y := tan(deg_to_rad(camera.fov) / 2.0)
+						var tan_x := tan_y * view_size.x / view_size.y
+						var corner_angle := atan(sqrt(tan_x * tan_x + tan_y * tan_y))
+						var cam_pos := p + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)).normalized() * margin * rng.randf()
+						var box_min := Vector3(key.x, key.y, key.z)
+						var nearest := cam_pos.clamp(box_min, box_min + Vector3(side, side, side))
+						for k in 12:
+							var q := nearest if k < 6 else box_min + Vector3(rng.randf(), rng.randf(), rng.randf()) * side
+							if q.distance_to(cam_pos) < 1.0: continue
+							var to_q := (q - cam_pos).normalized()
+							var turn_axis := to_q.cross(Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1))).normalized()
+							var forward := to_q.rotated(turn_axis, corner_angle * rng.randf_range(0.6, 1.0))
+							var up := forward.cross(Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1))).normalized()
+							camera.global_transform = Transform3D(Basis.looking_at(forward, up), cam_pos)
+							far_points += 1
+							var inside := true
+							for plane in camera.get_frustum():
+								if plane.is_point_over(q): inside = false; break
+							if inside:
+								failures += 1; print("FAIL depth %d: far-culled leaf %s has a point %s inside the frustum of a camera at %s" % [depth, key, q, cam_pos])
+				# real surface points inside the horizon-culled leaf, seen from the player and from positions up to the margin away
+				if not mgr.is_hidden(p, key, margin): continue
 				if depth_rays >= depth_target or rng.randf() > 0.1: continue
 				for k in 4:
 					var q := Vector3(key.x, key.y, key.z) + Vector3(rng.randf(), rng.randf(), rng.randf()) * side
@@ -72,7 +107,7 @@ func _process(_d: float) -> bool:
 							failures += 1; print("FAIL depth %d: culled leaf %s has a visible surface point %s from %s" % [depth, key, s_pt, cam])
 		rays += depth_rays
 		mgr.queue_free(); player.queue_free()
-	print("check_cull: %d culled leaves seen, %d rays, %d failures -> %s" % [culled_total, rays, failures, "OK" if failures == 0 and culled_total > 0 else "FAILED"])
+	print("check_cull: %d culled leaves seen (%d by the far plane, %d points checked against the frustum), %d rays, %d failures -> %s" % [culled_total, far_culled_total, far_points, rays, failures, "OK" if failures == 0 and culled_total > 0 and far_points > 0 else "FAILED"])
 	quit()
 	return false
 

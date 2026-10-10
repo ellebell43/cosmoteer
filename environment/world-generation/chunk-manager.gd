@@ -13,8 +13,25 @@ const CLEANUP_INTERVAL := 250000
 const CULLED_BIT := 64
 ## Mask for the 6 transition bits of a leaf's value in `new_chunk_set`
 const TRANSITION_MASK_BITS := 63
-## How far the player may be from the position the leaf set was computed for (movement threshold, leaf job and generation latency, fast flight) before a leaf that was culled becomes visible. Culling tests every leaf as if the camera could be anywhere within this distance. It must stay well below the gap between the surface and the occluding ball (`WorldNoise` elevation bound), otherwise the test gives up and nothing is culled.
-const CULL_MARGIN := 32.0
+## Margin used by `_compute_leaf_set()` when the caller does not pass one. The manager itself passes `get_cull_margin()`.
+const DEFAULT_CULL_MARGIN := 32.0
+## Until a culled chunk has been brought back into view once, this many seconds are assumed for how long that takes: from the player passing the movement threshold, through the leaf job and reconcile, to the chunk's mesh being built. Afterwards `cull_latency` follows what was measured.
+const DEFAULT_CULL_LATENCY := 1.0
+## Latency assumed for generating a chunk's mesh once its leaf set is applied, added to the measured time from the start of a leaf job to its application
+const CULL_GENERATION_LATENCY := 0.25
+## The measured latency never falls below this many seconds
+const MINIMUM_CULL_LATENCY := 0.5
+## The margin allows for the measured latency times this, since a slow chunk can come after the measured peak
+const CULL_LATENCY_SAFETY := 2.0
+## When the margin would exceed this many meters (the player is too fast for chunks to be brought back in time), nothing is culled. Culled chunks are then regenerated, as if culling was off.
+const MAXIMUM_CULL_MARGIN := 300.0
+## Seconds for the measured latency to halve when no slower chunk has been seen. Does not start until one chunk has been measured.
+const CULL_LATENCY_HALF_LIFE := 30.0
+## Seconds for the speed estimate to halve once the player slows down. It rises at once when the player speeds up, so the margin does not shrink just because the player paused.
+const SPEED_HALF_LIFE := 2.0
+## Camera values assumed for the far-plane test when the player has no camera (headless tests): Camera3D's defaults.
+const DEFAULT_CAMERA_FAR := 4000.0
+const DEFAULT_CAMERA_FOV := 75.0
 ## Bit order of the transition mask, matching `Chunk`: x, y, z, -x, -y, -z
 const FACE_DIRECTIONS: Array[Vector3i] = [
 	Vector3i(1, 0, 0), Vector3i(0, 1, 0), Vector3i(0, 0, 1),
@@ -33,6 +50,21 @@ var occluder_radius := 0.0
 ## Reference to the player node
 var player: Player
 var player_pos: Vector3
+## How fast the player moves relative to the planet in m/s: the latest speed, decaying slowly (`SPEED_HALF_LIFE`). Sets the culling margin.
+var player_speed := 0.0
+var _speed_sample_pos := Vector3.ZERO
+var _has_speed_sample := false
+## Seconds a culled chunk needed to come back into view: the slowest recently measured one (see `CULL_LATENCY_HALF_LIFE`). Together with `player_speed` it sets the culling margin.
+var cull_latency := DEFAULT_CULL_LATENCY
+var _latency_measured := false
+## Seconds from the start of a leaf job to the moment its leaf set was applied (the slowest recent one). Measured for every leaf set, so it also rises when no chunk has come back into view yet.
+var apply_latency := 0.0
+## Chunks that were culled, are visible again and still wait for their mesh, and the start time of the leaf job that revealed the earliest of them. While any wait, the time they have waited counts as latency too, so a backlog raises the margin before the slow chunks have finished.
+var _uncull_inflight := 0
+var _uncull_inflight_since_usec := 0
+## Start time of the leaf job whose result is being applied, and of the latest one started. A chunk that comes into view is timed from the start of the leaf job that revealed it.
+var _applied_job_start_usec := 0
+var _latest_job_start_usec := 0
 var is_current_world := false
 
 # ========== CHUNK MANAGEMENT VARIABLES ==========
@@ -106,6 +138,11 @@ var find_masks_time := 0
 var cull_time := 0
 ## Number of leaves flagged as culled by the latest leaf set
 var culled_leaf_count := 0
+## Of those, the leaves culled only because they are beyond the camera's far plane
+var far_culled_leaf_count := 0
+## The margin and far distance used by the latest leaf job
+var last_cull_margin := 0.0
+var last_cull_distance := INF
 var load_new_chunks_time := 0
 var mark_retirees_time := 0
 var check_retirees_time := 0
@@ -141,7 +178,7 @@ func get_timing_snapshot() -> String:
 	ChunkManager process: %d
 	Octree iterate: %d <- not on main
 	Find Masks: %d <- not on main
-	Cull: %d <- not on main (%d leaves culled)
+	Cull: %d <- not on main (%d leaves culled, %d of them by far plane, margin %.0f m, latency %.2f s)
 	Load Chunks: %d
 	Mark Retirees: %d
 	Check Retirees: %d
@@ -151,6 +188,9 @@ func get_timing_snapshot() -> String:
 		find_masks_time,
 		cull_time,
 		culled_leaf_count,
+		far_culled_leaf_count,
+		last_cull_margin,
+		cull_latency,
 		load_new_chunks_time,
 		mark_retirees_time,
 		check_retirees_time,
@@ -161,10 +201,12 @@ func get_timing_snapshot() -> String:
 func _process(_delta: float) -> void:
 	var start_time := Time.get_ticks_usec()
 	var local_player_pos := to_local(player.global_position)
+	_update_player_speed(local_player_pos, _delta)
 
 	# The first leaf set is computed right away and applied in full so that the loading screen knows how many tasks to wait for
 	if not first_iteration_complete:
-		new_chunk_set = _compute_leaf_set(local_player_pos, is_current_world)
+		_applied_job_start_usec = start_time
+		new_chunk_set = _compute_leaf_set(local_player_pos, is_current_world, get_cull_margin(), _get_cull_distance())
 		var load_start := Time.get_ticks_usec()
 		_begin_phase(ReconcilePhase.LOAD, new_chunk_set.keys())
 		_step_reconcile(-1)
@@ -178,7 +220,8 @@ func _process(_delta: float) -> void:
 	# When the player passes the movement threshold, compute a new leaf set on a worker thread. Only one job runs at a time; by the time it is done the player has usually moved further, which simply starts the next one.
 	if is_current_world and leaf_job_task == -1 and not _leaf_result_ready and local_player_pos.distance_to(prev_player_pos) >= player_movement_threshold:
 		prev_player_pos = local_player_pos
-		leaf_job_task = WorkerThreadPool.add_task(_leaf_job.bind(local_player_pos, is_current_world))
+		_latest_job_start_usec = start_time
+		leaf_job_task = WorkerThreadPool.add_task(_leaf_job.bind(local_player_pos, is_current_world, get_cull_margin(), _get_cull_distance()))
 
 	if leaf_job_task != -1 and WorkerThreadPool.is_task_completed(leaf_job_task):
 		WorkerThreadPool.wait_for_task_completion(leaf_job_task)
@@ -188,6 +231,8 @@ func _process(_delta: float) -> void:
 	# Apply a finished leaf set as soon as the previous reconcile is done. new_chunk_set is only ever replaced here, on the main thread.
 	if _leaf_result_ready and _phase == ReconcilePhase.IDLE:
 		new_chunk_set = _leaf_job_result
+		_applied_job_start_usec = _latest_job_start_usec
+		apply_latency = maxf(apply_latency, float(start_time - _applied_job_start_usec) / 1e6)
 		_leaf_job_result = {}
 		_leaf_result_ready = false
 		_begin_phase(ReconcilePhase.MARK, active_chunk_set.keys())
@@ -202,12 +247,12 @@ func _process(_delta: float) -> void:
 # ========== LEAF SET (WORKER THREAD) ==========
 
 ## Worker task body: computes the next leaf set into `_leaf_job_result`.
-func _leaf_job(local_player_pos: Vector3, current_world: bool) -> void:
+func _leaf_job(local_player_pos: Vector3, current_world: bool, cull_margin: float, cull_distance: float) -> void:
 	if _shutting_down: return
-	_leaf_job_result = _compute_leaf_set(local_player_pos, current_world)
+	_leaf_job_result = _compute_leaf_set(local_player_pos, current_world, cull_margin, cull_distance)
 
 ## Builds the octree for the given player position and gives every leaf its transition mask. Returns a new dictionary and does not touch any manager state other than the timing variables, so it is safe to run on a worker thread.
-func _compute_leaf_set(local_player_pos: Vector3, current_world: bool) -> Dictionary[Vector4i, int]:
+func _compute_leaf_set(local_player_pos: Vector3, current_world: bool, cull_margin := DEFAULT_CULL_MARGIN, cull_distance := INF) -> Dictionary[Vector4i, int]:
 	var start_time := Time.get_ticks_usec()
 	var leaves: Dictionary[Vector4i, int] = {}
 	if current_world: _octree_iterate(leaves, local_player_pos)
@@ -217,20 +262,68 @@ func _compute_leaf_set(local_player_pos: Vector3, current_world: bool) -> Dictio
 	_find_masks(leaves)
 	find_masks_time = Time.get_ticks_usec() - start_time
 	# Culling comes after the masks: a culled leaf is still the neighbour that decides whether the leaf next to it needs transition cells
-	if current_world:
+	if current_world and cull_margin <= MAXIMUM_CULL_MARGIN:
 		start_time = Time.get_ticks_usec()
-		_apply_cull(leaves, local_player_pos)
+		_apply_cull(leaves, local_player_pos, cull_margin, cull_distance)
 		cull_time = Time.get_ticks_usec() - start_time
 	return leaves
 
-## Flags every leaf that the planet hides from the player with `CULLED_BIT`. Only touches the given dictionary, so it is safe to run on a worker thread.
-func _apply_cull(leaves: Dictionary[Vector4i, int], camera_pos: Vector3) -> void:
+## Updates `player_speed` from how far the player moved since the last frame, and lets the measured `cull_latency` decay. Main thread.
+func _update_player_speed(local_player_pos: Vector3, delta: float) -> void:
+	if _has_speed_sample and delta > 0.0:
+		var current_speed := local_player_pos.distance_to(_speed_sample_pos) / delta
+		player_speed = maxf(current_speed, player_speed * pow(0.5, delta / SPEED_HALF_LIFE))
+		if _latency_measured: cull_latency = maxf(MINIMUM_CULL_LATENCY, cull_latency * pow(0.5, delta / CULL_LATENCY_HALF_LIFE))
+		apply_latency *= pow(0.5, delta / CULL_LATENCY_HALF_LIFE)
+	_speed_sample_pos = local_player_pos
+	_has_speed_sample = true
+
+## How far from the position the leaf set was computed for the camera may be by the time a culled leaf has to be on screen: the distance moved before a new leaf set starts (`player_movement_threshold`) plus what the player covers at the current speed while a culled chunk is brought back (`cull_latency`, with a safety factor).
+func get_cull_margin() -> float:
+	var latency := maxf(cull_latency, apply_latency + CULL_GENERATION_LATENCY)
+	if _uncull_inflight > 0: latency = maxf(latency, float(Time.get_ticks_usec() - _uncull_inflight_since_usec) / 1e6)
+	return player_movement_threshold + player_speed * latency * CULL_LATENCY_SAFETY
+
+## Distance from the camera beyond which a point can not be on screen: the distance to the corners of the far plane. Anything further away than this is clipped, whichever way the camera turns. INF when the camera is not a perspective camera. Reads the camera, so main thread only.
+func _get_cull_distance() -> float:
+	var far := DEFAULT_CAMERA_FAR
+	var fov := DEFAULT_CAMERA_FOV
+	var keeps_height := true
+	var camera: Camera3D = player.camera if player != null else null
+	if camera != null:
+		if camera.projection != Camera3D.PROJECTION_PERSPECTIVE: return INF
+		far = camera.far
+		fov = camera.fov
+		keeps_height = camera.keep_aspect == Camera3D.KEEP_HEIGHT
+	var viewport_size := get_viewport().get_visible_rect().size if is_inside_tree() else Vector2(16, 9)
+	var aspect := viewport_size.x / viewport_size.y if viewport_size.y > 0.0 else 16.0 / 9.0
+	var tan_half_fov := tan(deg_to_rad(fov) / 2.0)
+	var tan_x := tan_half_fov * aspect if keeps_height else tan_half_fov
+	var tan_y := tan_half_fov if keeps_height else tan_half_fov / aspect
+	return far * sqrt(1.0 + tan_x * tan_x + tan_y * tan_y)
+
+## Flags every leaf that can not be seen from the player with `CULLED_BIT`: the ones the planet hides, and the ones beyond `cull_distance`. Only touches the given dictionary, so it is safe to run on a worker thread.
+func _apply_cull(leaves: Dictionary[Vector4i, int], camera_pos: Vector3, margin: float, cull_distance: float) -> void:
 	var culled := 0
+	var far_culled := 0
 	for key: Vector4i in leaves.keys():
-		if is_hidden(camera_pos, key, CULL_MARGIN):
+		if is_beyond_view(camera_pos, key, margin, cull_distance):
+			leaves.set(key, leaves[key] | CULLED_BIT)
+			culled += 1
+			far_culled += 1
+		elif is_hidden(camera_pos, key, margin):
 			leaves.set(key, leaves[key] | CULLED_BIT)
 			culled += 1
 	culled_leaf_count = culled
+	far_culled_leaf_count = far_culled
+	last_cull_margin = margin
+	last_cull_distance = cull_distance
+
+## True when the leaf `key` is entirely further than `cull_distance` from every point within `margin` of `camera_pos`.
+func is_beyond_view(camera_pos: Vector3, key: Vector4i, margin: float, cull_distance: float) -> bool:
+	var side := float(key.w * CHUNK_SIZE)
+	var leaf_center := Vector3(key.x, key.y, key.z) + Vector3(side, side, side) / 2.0
+	return camera_pos.distance_to(leaf_center) - side * 0.8660254 - margin > cull_distance
 
 ## True when the leaf `key` can not be seen from any point within `margin` of `camera_pos`, because the solid ball of radius `occluder_radius` around the planet's center is in the way. Conservative: the leaf's bounding sphere has to lie wholly in the shadow of the ball, behind the circle where the view rays touch it. Returns false (nothing is hidden) when there is no occluder, the camera is at or within `margin` of the ball, or the camera is within `margin` of the leaf's bounding sphere.
 func is_hidden(camera_pos: Vector3, key: Vector4i, margin: float) -> bool:
@@ -398,8 +491,17 @@ func _load_chunk(key: Vector4i) -> void:
 	if leaf_value & CULLED_BIT:
 		_cull_chunk(chunk)
 	else:
-		chunk.is_culled = false
-		_remesh_if_needed(chunk)
+		if chunk.is_culled:
+			chunk.is_culled = false
+			chunk.uncull_requested_usec = _applied_job_start_usec
+			_remesh_if_needed(chunk)
+			if chunk.thread_id != -1:
+				if _uncull_inflight == 0: _uncull_inflight_since_usec = _applied_job_start_usec
+				_uncull_inflight += 1
+			else:
+				chunk.uncull_requested_usec = 0
+		else:
+			_remesh_if_needed(chunk)
 
 ## An ACTIVE chunk that the planet now hides: drop its mesh and collider and take it out of the tree. It stays ACTIVE (it still covers its space for the retire bookkeeping) and is meshed again when it comes back into view.
 func _cull_chunk(chunk: Chunk) -> void:
@@ -597,6 +699,18 @@ func _finish_chunk(chunk: Chunk) -> void:
 		else: _cull_chunk(chunk)
 		chunk.mesh_data = null
 		chunk.built_transition_mask = -1
+
+	# A chunk that came back into view: time how long it took, from the start of the leaf job that revealed it
+	if chunk.uncull_requested_usec != 0:
+		_uncull_inflight -= 1
+		if chunk.is_culled:
+			chunk.uncull_requested_usec = 0
+	if chunk.uncull_requested_usec != 0:
+		var measured := float(Time.get_ticks_usec() - chunk.uncull_requested_usec) / 1e6
+		# The first measurement replaces the default, which only stands in until then
+		cull_latency = maxf(MINIMUM_CULL_LATENCY, measured) if not _latency_measured else maxf(cull_latency, measured)
+		_latency_measured = true
+		chunk.uncull_requested_usec = 0
 
 	if chunk.mesh_data != null:
 		# Chunks only join the scene tree once they have something to show

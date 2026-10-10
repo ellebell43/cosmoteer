@@ -49,6 +49,8 @@ var desired_transition_mask := -1
 var built_transition_mask := -1
 ## True while the planet hides this chunk from the player. A culled chunk is ACTIVE but has no mesh, collider or place in the tree, and is not remeshed until it is visible again.
 var is_culled := false
+## Start time (microseconds) of the leaf job that made this chunk visible again after it was culled. 0 when it is not waiting for its mesh. Used to measure how long that takes.
+var uncull_requested_usec := 0
 ## True once it is known that this chunk can never have a mesh (no surface crosses it). Empty chunks are never remeshed.
 var is_empty := false
 ## The ID of the worker thread that is constructing the mesh data. When -1, there is no thread and therefore the chunk is not building any mesh data.
@@ -534,6 +536,8 @@ func build_mesh() -> void:
 	# Only the finest chunks have collision. Physics server calls are not thread-safe with this project's physics settings, so the shape is created here on the main thread.
 	if lod_step == 1:
 		mesh_instance.create_trimesh_collision()
-		var collision_instance: StaticBody3D = mesh_instance.get_child(-1)
-		collision_instance.set_collision_layer_value(2, true) # planet collision layer
-		collision_instance.set_collision_mask_value(1, true) # player collisions
+		# No body is created when the mesh has no triangles
+		var collision_instance := mesh_instance.get_child(-1) as StaticBody3D
+		if collision_instance != null:
+			collision_instance.set_collision_layer_value(2, true) # planet collision layer
+			collision_instance.set_collision_mask_value(1, true) # player collisions

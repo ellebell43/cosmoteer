@@ -45,7 +45,7 @@ System (environment/system.gd, Node3D)
 
 ## Current-world vs. distant-world
 
-Only the planet the player is inside gravity range of (`is_current_world`) runs full octree LOD refinement around the player, and horizon culling of the chunks the planet hides (see `docs/world-generation.md`). Other planets collapse to a single coarse root chunk (see `_octree_iterate` in `chunk-manager.gd`). This is how multiple planets stay affordable in one scene.
+Only the planet the player is inside gravity range of (`is_current_world`) runs full octree LOD refinement around the player, and culling of the chunks the planet hides or that are beyond the camera's far plane (see `docs/world-generation.md`). Other planets collapse to a single coarse root chunk (see `_octree_iterate` in `chunk-manager.gd`). This is how multiple planets stay affordable in one scene.
 
 ## Planned (not built yet)
 
