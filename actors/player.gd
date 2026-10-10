@@ -24,6 +24,8 @@ func _ready() -> void:
 	if spawn_world:
 		global_position = spawn_world.get_valid_spawn_point()
 		#global_position = Vector3(spawn_world.world_radius, spawn_world.world_radius, spawn_world.world_radius)
+		# The spawn point is on the planet, so it is the current world from the start. Waiting for the GravityArea's body_entered is a race: it needs a physics step, and the ChunkManager's first octree pass can run before that and only produce the coarse root chunk.
+		current_world = spawn_world
 
 func _physics_process(delta):
 	# if the player is at a world, calculate a tangential velocity (applied later) to lock the player to the planets rotation. Also rotate the player according to the planet's spin
@@ -34,10 +36,13 @@ func _physics_process(delta):
 		planet_rotation_v = angular_velocity_vector.cross(displacement_vector)
 		self.global_rotate(current_world.rotation_axis, current_world.angular_speed * delta)
 	
-	# orient player with planets surface
-	var target_basis := get_planet_aligned_basis()
-	up_direction = -get_gravity().normalized()
-	global_transform.basis = global_transform.basis.slerp(target_basis, delta * ROTATION_SPEED).orthonormalized()
+	# orient player with planets surface. Gravity is zero until the GravityArea has registered the player (the first physics frames), so keep the current orientation then.
+	var gravity := get_gravity()
+	var target_basis := global_transform.basis
+	if not gravity.is_zero_approx():
+		target_basis = get_planet_aligned_basis()
+		up_direction = -gravity.normalized()
+		global_transform.basis = global_transform.basis.slerp(target_basis, delta * ROTATION_SPEED).orthonormalized()
 	
 	# preserve vertical velocity from previous velocity to allow it to decay
 	var vertical_velocity := up_direction * velocity.dot(up_direction)
