@@ -22,9 +22,7 @@ func _process(_d: float) -> bool:
 	var args := OS.get_cmdline_user_args()
 	if args.size() > 0: variant = args[0]
 	root.get_node("Utils").debug = false
-	var cont: Curve = load("res://environment/world-generation/slope_curves/default_continent_curve.tres")
-	var mount: Curve = load("res://environment/world-generation/slope_curves/default_mountain_curve.tres")
-	noise = load("res://environment/world-generation/world-noise.gd").new(1, 2048.0, 524, 0, cont, mount)
+	noise = load("res://environment/world-generation/world-noise.gd").new(1, 2048.0, load("res://environment/world-generation/terrain-params.gd").new())
 	lut_script = load("res://environment/world-generation/transvoxel-lut.gd")
 	var ChunkS: GDScript = load("res://environment/world-generation/chunk.gd")
 	var c := Vector3(1024, 1024, 1024)
@@ -42,13 +40,11 @@ func _process(_d: float) -> bool:
 		var off := Vector3(floor(hit.x / 16), floor(hit.y / 16), floor(hit.z / 16)) * 16
 		jobs.append(ChunkS.new(16, noise, off, 1))
 	for w in 16:
-		var cc2: Curve = noise.continent_curve.duplicate()
-		var mc2: Curve = noise.mountain_curve.duplicate()
-		priv.append(load("res://environment/world-generation/world-noise.gd").new(1, 2048.0, 524, 0, cc2, mc2))
+		priv.append(load("res://environment/world-generation/world-noise.gd").new(1, 2048.0, load("res://environment/world-generation/terrain-params.gd").new()))
 		var f1 := FastNoiseLite.new(); f1.noise_type = FastNoiseLite.TYPE_PERLIN; f1.frequency = 0.005; f1.fractal_octaves = 4; f1.fractal_type = FastNoiseLite.FRACTAL_FBM
 		var f2 := FastNoiseLite.new(); f2.noise_type = FastNoiseLite.TYPE_SIMPLEX; f2.frequency = 0.03; f2.fractal_octaves = 5; f2.fractal_type = FastNoiseLite.FRACTAL_RIDGED
 		privfn.append(f1); privfm.append(f2)
-		privcurve.append(noise.continent_curve.duplicate())
+		privcurve.append(_make_curve())
 	print("[parallel] variant=%s jobs=%d cpus=%d" % [variant, jobs.size(), OS.get_processor_count()])
 	var base := 0.0
 	for n in [1, 2, 4, 8, 13]:
@@ -62,6 +58,13 @@ func _process(_d: float) -> bool:
 		print("  threads=%2d  wall=%8.1f ms  speedup=%.2fx  efficiency=%3.0f%%" % [n, wall, base / wall, 100.0 * base / wall / n])
 	quit()
 	return false
+
+var shared_curve := _make_curve()
+
+func _make_curve() -> Curve:
+	var c := Curve.new()
+	c.add_point(Vector2(0, 0)); c.add_point(Vector2(0.5, 1)); c.add_point(Vector2(1, 0.2))
+	return c
 
 func _run(w: int, n: int) -> void:
 	var i := w
@@ -97,7 +100,7 @@ func _run(w: int, n: int) -> void:
 					fn2.get_noise_3d(off2.x + x, off2.y + y, off2.z + z)
 					fm2.get_noise_3d(off2.x + x, off2.y + y, off2.z + z)
 			"curve_shared":
-				var cc = noise.continent_curve
+				var cc = shared_curve
 				for k in 17 * 17 * 17:
 					cc.sample(float(k % 100) / 200.0)
 			"curve_private":

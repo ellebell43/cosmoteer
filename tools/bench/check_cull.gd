@@ -12,8 +12,6 @@ func _process(_d: float) -> bool:
 	started = true
 	var NoiseScript: GDScript = load("res://environment/world-generation/world-noise.gd")
 	var mgr_script: GDScript = load("res://environment/world-generation/chunk-manager.gd")
-	var cont: Curve = load("res://environment/world-generation/slope_curves/default_continent_curve.tres")
-	var mount: Curve = load("res://environment/world-generation/slope_curves/default_mountain_curve.tres")
 	var stub := GDScript.new()
 	stub.source_code = "extends \"res://actors/player.gd\"\nfunc _ready(): pass\nfunc _physics_process(_d): pass\nfunc _input(_e): pass\n"
 	stub.reload()
@@ -30,9 +28,9 @@ func _process(_d: float) -> bool:
 	for depth in [7, 9, 12]:
 		var volume: float = 16.0 * pow(2, depth)
 		var floor_distance := int(volume / 2) - 500
-		var noise = NoiseScript.new(1, volume, floor_distance, 0, cont, mount)
+		var noise = NoiseScript.new(1, volume, load("res://environment/world-generation/terrain-params.gd").new())
 		var center := Vector3(volume, volume, volume) / 2
-		var max_e: float = noise.bias_threshold / NoiseScript.FLOOR_BIAS
+		var max_e: float = maxf(noise.max_elevation, -noise.min_elevation)
 		var player = stub.new()
 		root.add_child(player)
 		var mgr = mgr_script.new(player, 1, depth, noise, true)

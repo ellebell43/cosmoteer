@@ -25,11 +25,9 @@ func _process(_d: float) -> bool:
 		if args.size() > 3: mgr_path = args[3]
 		Engine.max_fps = 60
 		root.get_node("Utils").debug = false
-		var cont: Curve = load("res://environment/world-generation/slope_curves/default_continent_curve.tres")
-		var mount: Curve = load("res://environment/world-generation/slope_curves/default_mountain_curve.tres")
 		var volume := 16.0 * pow(2, depth)
 		var floor_distance := int(volume / 2) - 500
-		var noise = load("res://environment/world-generation/world-noise.gd").new(1, volume, floor_distance, 0, cont, mount)
+		var noise = load("res://environment/world-generation/world-noise.gd").new(1, volume, load("res://environment/world-generation/terrain-params.gd").new())
 		center = Vector3(volume, volume, volume) / 2
 		var prev := -1.0
 		for r in range(floor_distance - 200, floor_distance + 300):

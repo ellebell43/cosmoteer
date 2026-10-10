@@ -15,7 +15,8 @@ func _process(_d: float) -> bool:
 	if started: return false
 	started = true
 	for w in 16:
-		var cu: Curve = load("res://environment/world-generation/slope_curves/default_continent_curve.tres").duplicate()
+		var cu := Curve.new()
+		cu.add_point(Vector2(0, 0)); cu.add_point(Vector2(0.5, 1)); cu.add_point(Vector2(1, 0.2))
 		var fn := FastNoiseLite.new(); fn.frequency = 0.01
 		objs.append({"curve": cu, "noise": fn, "ref": RefCounted.new(), "dummy": Dummy.new(), "node": Node3D.new()})
 	for v in ["builtin_vec3", "gd_self_call", "gd_obj_call", "native_refcounted_trivial", "native_node_trivial", "native_curve_untyped", "native_curve_typed", "native_noise_typed"]:

@@ -6,7 +6,7 @@ These describe the style the existing code already follows. When reviewing my co
 
 - Godot 4 syntax; indent with tabs.
 - Static typing where practical: `var x := 5`, `func f(a: int) -> void`, typed collections (`Dictionary[Vector4i, Chunk]`, `Array[PackedInt32Array]`). Flag untyped signatures as review feedback, but don't treat them as bugs.
-- `class_name` on scripts other code references (`Player`, `Planet`, `ChunkManager`, `Chunk`, `WorldNoise`).
+- `class_name` on scripts other code references (`Player`, `Planet`, `ChunkManager`, `Chunk`, `WorldNoise`, `TerrainParams`).
 - Doc comments use `##` above exported/important members; `#` for inline notes. Use `# ====== SECTION ======` banners to group large scripts.
 - `@export` for designer-tunable values, `@onready` for node refs (prefer `%UniqueName` nodes).
 - Private helpers prefixed with `_`; unused params prefixed `_` (and `@warning_ignore(...)` where intentional).
@@ -15,7 +15,7 @@ These describe the style the existing code already follows. When reviewing my co
 
 ## Naming
 
-- Scripts and scene files: existing mix of `kebab-case` (`chunk-manager.gd`, `world-noise.gd`) and `snake_case` (`start_screen.tscn`, `slope_curves/`). Pick one for new files. **Decision pending:** note it here once decided (Godot's own convention is snake_case).
+- Scripts and scene files: existing mix of `kebab-case` (`chunk-manager.gd`, `world-noise.gd`) and `snake_case` (`start_screen.tscn`). Pick one for new files. **Decision pending:** note it here once decided (Godot's own convention is snake_case).
 - Constants: `UPPER_SNAKE_CASE`. Variables/functions: `snake_case`. Classes/enums types: `PascalCase`. Note `Chunk.chunk_state` is lowercase, an inconsistency to fix eventually.
 
 ## Repo

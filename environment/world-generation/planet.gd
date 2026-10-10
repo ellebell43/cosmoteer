@@ -5,7 +5,7 @@ extends Node3D
 @export var player: Player
 ## Determines the world that is generated
 @export var world_seed: int = 1
-## ChunkManager.CHUNK_SIZE * 2^size = total_volume. total_volume / 2 - 500 = surface radius. size = max_octree_depth in the ChunkManager. (ChunkManager.CHUNK_SIZE = 16). Max terrain height = 2000 above surface radius. The maximum is set by physics, not by chunk count: with a 20 minute day the surface of a size 14 planet moves at 684 m/s and walking on it stays smooth, while at size 15 (1,370 m/s) the player's `move_and_slide` against the moving colliders makes 4 of 10 test locations hitch, and by size 17 (5.5 km/s) it is unplayable. See `tools/bench/check_physics_hitches.gd`.
+## ChunkManager.CHUNK_SIZE * 2^size = total_volume. total_volume / 2 - margin = sea radius, where the margin is at least 500 m and grows with the tallest possible terrain (see `WorldNoise.get_limits()`). size = max_octree_depth in the ChunkManager. (ChunkManager.CHUNK_SIZE = 16). The maximum is set by physics, not by chunk count: with a 20 minute day the surface of a size 14 planet moves at 684 m/s and walking on it stays smooth, while at size 15 (1,370 m/s) the player's `move_and_slide` against the moving colliders makes 4 of 10 test locations hitch, and by size 17 (5.5 km/s) it is unplayable. See `tools/bench/check_physics_hitches.gd`.
 @export_range(7, 14) var size := 7
 # |  size | volume in meters | True  diameter | Surface speed, 20 min day |
 # | ----- | =================| ===============| ========================= |
@@ -26,18 +26,11 @@ extends Node3D
 @export_range(20, 30) var day_length_minutes: int = 25
 ## The axis that the planet spins on
 @export var rotation_axis := Vector3(randf(), randf(), randf()).normalized()
-## how far above/below the "floor_distance" the sea level should be
-@export var sea_level_modifier: int = 0
+## The shape of the terrain: continents, mountains, hills. Every planet should have its own resource (or share a saved preset). Left empty, the defaults are used.
+@export var terrain: TerrainParams
 
 ## Reference to the shape of the GravityArea Area3D node. Size is set to diameter * 2 in _ready()
 @onready var gravity_shape := $GravityArea/GravityShape
-## Curve the determines the overall shape of the land (continent shelves, beaches, deep ocean, etc.). Use to interpolate elevation from isovalue. Range should be [-1,1] and domain represents elevation
-@export var continent_curve: Curve
-## Curve that will apply the amplitude of the WorldNoise.mountain_noise. Domain is equivilent to elevation (value range of continent_curve), range is equivilent to noise amplitude to be applied (should be [0,1])
-@export var mountain_curve: Curve
-@onready var default_continent_curve: Curve = preload("res://environment/world-generation/slope_curves/default_continent_curve.tres")
-@onready var default_mountain_slope: Curve = preload("res://environment/world-generation/slope_curves/default_mountain_curve.tres")
-
 ## Reference to the local ChunkManager for this planet.
 var chunk_manager: ChunkManager
 var world_noise: WorldNoise
@@ -48,6 +41,7 @@ var angular_speed: float:
 var total_volume: Vector3
 ## The general diameter of the planet mesh: (20 * 2^size) / 2
 var diameter: int
+## The radius of the sea, where elevation 0 is. Terrain goes up to `world_noise.max_elevation` above and down to `world_noise.min_elevation` below it.
 var floor_distance: int
 var is_current_world := false:
 	set(new_is_current_world):
@@ -56,23 +50,15 @@ var is_current_world := false:
 			chunk_manager.is_current_world = new_is_current_world
 
 func _ready() -> void:
-	# determine total volume, planet diameter, and gravity radius from self.size and chunk_manager.chunk_size
+	# determine total volume from self.size and chunk_manager.chunk_size
 	var volume_length = ChunkManager.CHUNK_SIZE * pow(2, size)
 	total_volume = Vector3(volume_length, volume_length, volume_length)
-	floor_distance = (volume_length / 2) - 500
-	# gravity extends 1000m beyond the surface of the planet
+	if terrain == null: terrain = TerrainParams.new()
+	# initialize the world noise. It decides the sea radius, since the volume has to leave room for the tallest terrain.
+	world_noise = WorldNoise.new(world_seed, volume_length, terrain)
+	floor_distance = int(world_noise.sea_level)
+	# gravity extends 1000m beyond the sea radius
 	gravity_shape.shape.radius = floor_distance + 1000
-	if continent_curve == null: continent_curve = default_continent_curve
-	if mountain_curve == null: mountain_curve = default_mountain_slope
-	# initialize the world noise
-	world_noise = WorldNoise.new(
-		world_seed, 
-		volume_length, 
-		floor_distance, 
-		sea_level_modifier, 
-		continent_curve, 
-		mountain_curve
-	)
 	# initialize the chunk_manager
 	chunk_manager = ChunkManager.new(player, world_seed, size, world_noise, is_current_world)
 	# set the chunk_manager position so that the planet mesh is center at the node origin
@@ -81,43 +67,48 @@ func _ready() -> void:
 	print("Planet %s diameter: %dkm" % [self.name, volume_length - 1000])
 	print("floor_distance: ", floor_distance)
 
-## The number of tries there has been to find a valid spawn point.
-var n_tries = 0
-## Called by Player to find a valid spawn point on this planet that places them 1m above a random point on the planet. Will cause an infinite loop if player is loaded in first. Ensure player is loaded in below all Planet nodes
+## How many random directions `get_valid_spawn_point()` tries before it gives up. Most of a planet can be ocean, so this is generous.
+const MAX_SPAWN_TRIES := 100
+## The spawn point has to be at least this far above the sea radius.
+const MIN_SPAWN_ELEVATION := 2.0
+## Step of the downward search for the surface in `_find_surface_radius()`. Bisection refines the result.
+const SPAWN_SEARCH_STEP := 4.0
+
+## Called by Player to find a valid spawn point on this planet that places them 2m above a random point on dry land. Uses `world_noise`, so it works before the chunk_manager has generated anything. Requires the planet's _ready() to have run (Player loads in below all Planet nodes).
 func get_valid_spawn_point() -> Vector3:
-	if Utils.debug: print("spawn planet is ", self)
-	n_tries += 1
-	if Utils.debug: print("searching for spawn ", n_tries)
-	# create WorldNoise object with the same seed and size as planet. Cannot use chunk_manager since player may load in before chunk_manager
-	# get a random direction vector
-	var direction := Vector3(randf(), randf(), randf()).normalized()
-	# get a starting position that is at the center of the volume to start sampling + 1/4 of the way out of the volume
+	for attempt in MAX_SPAWN_TRIES:
+		# a random direction, uniform over the sphere
+		var direction := Vector3(randfn(0.0, 1.0), randfn(0.0, 1.0), randfn(0.0, 1.0)).normalized()
+		var radius := _find_surface_radius(direction)
+		if radius - world_noise.sea_level < MIN_SPAWN_ELEVATION: continue
+		if Utils.debug: print("spawn location found after %d tries, elevation %.1f" % [attempt + 1, radius - world_noise.sea_level])
+		# set spawn to be 2 meters above the point found to ensure player is above the mesh.
+		return direction * (radius + 2.0) + global_position
+	push_error("No valid spawn point found after %d tries. Spawning player at 0, 0, 0" % MAX_SPAWN_TRIES)
+	return Vector3.ZERO
+
+## Radius of the highest surface along `direction` from the center, or -1.0 if there is none. Walks down from above the highest possible terrain to the first rock, then bisects.
+func _find_surface_radius(direction: Vector3) -> float:
 	var volume_center := total_volume / 2
-	@warning_ignore("integer_division")
-	var starting_pos = volume_center + direction * (floor_distance - 50) # start 50 steps below the median surface level
-	
-	# while loop variables
-	var max_steps := 100 # don't sample beyond 50 steps past the median surface level, 100 steps total
-	var prev_scalar: float
-	var i := 1
-	
-	# sample scalars from the center of the volume, in random direction, to the edge of the volume and stop when the surface is found and return that value
-	while i < max_steps:
-		var sample_pos = starting_pos + direction * i
-		var sample_scalar = world_noise.sample(sample_pos.x, sample_pos.y, sample_pos.z)
-		if i != 1 and prev_scalar < 0 and sample_scalar > 0:
-			if Utils.debug: print("spawn location found: ", sample_pos)
-			return sample_pos - volume_center + direction * 2 + global_position # set spawn to be 2 meters above the point found to ensure player is above the mesh.
-		prev_scalar = sample_scalar
-		i += 1
-	
-	## If a spawn point could not be found after 5 tries, throw error and return Vector.ZERO as spawn point.
-	if n_tries == 5:
-		push_error("No valid spawn point found after 5 tries. Spawning player at 0, 0, 0")
-		return Vector3.ZERO
-	
-	# if no valid spawn point is found, run the function again (which will choose a different random direction). This should never be run. Hopefully.
-	return get_valid_spawn_point()
+	var top := world_noise.sea_level + world_noise.max_elevation
+	var bottom := world_noise.sea_level + world_noise.min_elevation
+	var above := top
+	var radius := top
+	while radius > bottom:
+		radius = maxf(radius - SPAWN_SEARCH_STEP, bottom)
+		var pos := volume_center + direction * radius
+		if world_noise.sample(pos.x, pos.y, pos.z) < 0.0:
+			# rock at `radius`, air at `above`: the surface is between them
+			var low := radius
+			var high := above
+			for i in 24:
+				var middle := (low + high) / 2.0
+				var middle_pos := volume_center + direction * middle
+				if world_noise.sample(middle_pos.x, middle_pos.y, middle_pos.z) < 0.0: low = middle
+				else: high = middle
+			return low
+		above = radius
+	return -1.0
 
 func _physics_process(delta: float) -> void:
 	# Rotate planet along the rotation_axis by the angular_speed

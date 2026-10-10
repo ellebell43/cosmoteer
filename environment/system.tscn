@@ -5,6 +5,11 @@
 [ext_resource type="PackedScene" uid="uid://bauo30v5lrxcu" path="res://actors/player.tscn" id="2_br15j"]
 [ext_resource type="PackedScene" uid="uid://p50l0yu47556" path="res://environment/world-generation/planet.tscn" id="3_wam8f"]
 [ext_resource type="PackedScene" uid="uid://bgaakqdq45o0s" path="res://interface/debug.tscn" id="5_wam8f"]
+[ext_resource type="Script" uid="uid://0ll2gjw2vsah" path="res://environment/world-generation/terrain-params.gd" id="6_terrain"]
+
+[sub_resource type="Resource" id="Resource_terrain"]
+script = ExtResource("6_terrain")
+continent_count = 8.0
 
 [node name="System" type="Node3D" unique_id=1029309 node_paths=PackedStringArray("player")]
 script = ExtResource("1_br15j")
@@ -14,6 +19,7 @@ player = NodePath("Player")
 
 [node name="Planet" parent="." unique_id=1766259659 node_paths=PackedStringArray("player") instance=ExtResource("3_wam8f")]
 player = NodePath("../Player")
+terrain = SubResource("Resource_terrain")
 
 [node name="Player" parent="." unique_id=766571082 node_paths=PackedStringArray("spawn_world") instance=ExtResource("2_br15j")]
 spawn_world = NodePath("../Planet")
