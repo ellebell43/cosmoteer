@@ -1,7 +1,10 @@
 class_name Chunk
 extends Node3D
 
-@onready var wireframe_material := preload("res://assets/textures/wireframe-material.tres")
+const WIREFRAME_MATERIAL := preload("res://assets/textures/wireframe-material.tres")
+
+## Material shared by every chunk mesh. Created on first use (always on the main thread, in `build_mesh()`).
+static var _shared_material: StandardMaterial3D
 
 # ============ DEBUG PROPERTIES ============
 
@@ -41,6 +44,8 @@ var volume_counter := 0
 var desired_transition_mask := -1
 ## A 6-bit value defining the faces that are currently implementing transition cells
 var built_transition_mask := -1
+## True once it is known that this chunk can never have a mesh (no surface crosses it). Empty chunks are never remeshed.
+var is_empty := false
 ## The ID of the worker thread that is constructing the mesh data. When -1, there is no thread and therefore the chunk is not building any mesh data.
 var thread_id := -1
 
@@ -480,23 +485,26 @@ func _get_field_normal(world_vector: Vector3) -> Vector3:
 	if scalar_gradient.length_squared() > 0.0: return scalar_gradient.normalized()
 	else: return Vector3.ZERO
 
+## Cheap check (no sampling) that the chunk is entirely above or below the surface, so it can never have a mesh. Only the chunk geometry is read, so this is safe to call on the main thread.
+func is_provably_empty() -> bool:
+	var empty := _determine_if_cell_is_empty()
+	if empty: is_empty = true
+	return empty
+
 ## constructs ArrayMesh data for building a MeshInstance3D for this chunk. mesh_data will be null if no data is/should be generated. Should be done off the main game thread.
 func generate_mesh_data(transition_mask: int) -> void:
 	built_transition_mask = transition_mask
 	_normal_cache.clear()
-	if _determine_if_cell_is_empty(): return
+	if _determine_if_cell_is_empty(): is_empty = true; return
 	var start_time := Time.get_ticks_usec()
 	var sample_data := _construct_sample_set(transition_mask)
-	if sample_data == null: mesh_data = null; return
+	if sample_data == null: mesh_data = null; is_empty = true; return
 	mesh_data = _generate_mesh_data(sample_data.corner_samples, transition_mask, sample_data.transition_samples)
 	_normal_cache.clear()
 	if Utils.debug == true:
-		call_deferred_thread_group("_emit_signal", Time.get_ticks_usec() - start_time)
+		Utils.call_deferred("emit_signal", "chunk_generated", Time.get_ticks_usec() - start_time)
 
-func _emit_signal(time: int) -> void:
-	Utils.emit_signal("chunk_generated", time)
-
-## Creates a MeshInstance3D from given ArrayMesh, adds it to the tree, and creates collisions for it. 
+## Creates a MeshInstance3D from given ArrayMesh, adds it to the tree, and creates collisions for it. Must run on the main thread, and the chunk must already be in the tree.
 func build_mesh() -> void:
 	for child in get_children():
 		if child is MeshInstance3D and child.name == "ChunkMesh":
@@ -509,12 +517,14 @@ func build_mesh() -> void:
 	self.add_child(mesh_instance)
 	mesh_instance.name = "ChunkMesh"
 	mesh_instance.mesh = mesh_data
-	if wireframe_mode: mesh_instance.material_override = wireframe_material
+	if wireframe_mode: mesh_instance.material_override = WIREFRAME_MATERIAL
 	else:
-		var material = StandardMaterial3D.new()
-		material.vertex_color_use_as_albedo = true
-		mesh_instance.material_override = material
+		if _shared_material == null:
+			_shared_material = StandardMaterial3D.new()
+			_shared_material.vertex_color_use_as_albedo = true
+		mesh_instance.material_override = _shared_material
 	
+	# Only the finest chunks have collision. Physics server calls are not thread-safe with this project's physics settings, so the shape is created here on the main thread.
 	if lod_step == 1:
 		mesh_instance.create_trimesh_collision()
 		var collision_instance: StaticBody3D = mesh_instance.get_child(-1)
