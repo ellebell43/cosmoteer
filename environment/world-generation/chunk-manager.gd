@@ -9,6 +9,12 @@ const MAXIMUM_BUILD_TIME := 3000
 const RECONCILE_BUDGET := 1500
 ## Minimum time in microseconds between retire/kill passes that are not triggered by a new leaf set
 const CLEANUP_INTERVAL := 250000
+## Set in a leaf's value in `new_chunk_set` (above the 6 transition mask bits) when the planet hides the leaf from the player. Culled leaves stay in the leaf set, so the retire/coverage bookkeeping works as for any other leaf. They just get no mesh.
+const CULLED_BIT := 64
+## Mask for the 6 transition bits of a leaf's value in `new_chunk_set`
+const TRANSITION_MASK_BITS := 63
+## How far the player may be from the position the leaf set was computed for (movement threshold, leaf job and generation latency, fast flight) before a leaf that was culled becomes visible. Culling tests every leaf as if the camera could be anywhere within this distance. It must stay well below the gap between the surface and the occluding ball (`WorldNoise` elevation bound), otherwise the test gives up and nothing is culled.
+const CULL_MARGIN := 32.0
 ## Bit order of the transition mask, matching `Chunk`: x, y, z, -x, -y, -z
 const FACE_DIRECTIONS: Array[Vector3i] = [
 	Vector3i(1, 0, 0), Vector3i(0, 1, 0), Vector3i(0, 0, 1),
@@ -22,6 +28,8 @@ enum ReconcilePhase {IDLE, MARK, LOAD, CHECK, COVERAGE, KILL}
 var chunk_count: int
 ## Scalar field that is used to determine the shape of the mesh along the chunks.
 var noise: WorldNoise
+## Radius of the ball around the planet's center that is solid everywhere: the surface is never closer to the center than this. Terrain inside it can hide whatever is behind it. 0 when there is no noise.
+var occluder_radius := 0.0
 ## Reference to the player node
 var player: Player
 var player_pos: Vector3
@@ -95,6 +103,9 @@ var total_chunk_gen_time := 0
 var total_chunks := 0
 var octree_iterate_time := 0
 var find_masks_time := 0
+var cull_time := 0
+## Number of leaves flagged as culled by the latest leaf set
+var culled_leaf_count := 0
 var load_new_chunks_time := 0
 var mark_retirees_time := 0
 var check_retirees_time := 0
@@ -106,6 +117,7 @@ func _init(_player: Player, _seed: int, _max_octree_depth: int, _noise: WorldNoi
 	self.max_octree_depth = _max_octree_depth
 	self.chunk_count = int(pow(2, max_octree_depth))
 	self.noise = _noise
+	if _noise != null: occluder_radius = _noise.sea_level - _noise.bias_threshold / WorldNoise.FLOOR_BIAS
 	self.player = _player
 	self.root_node_size = int(CHUNK_SIZE * pow(2, max_octree_depth))
 	self.is_current_world = _is_current_world
@@ -129,6 +141,7 @@ func get_timing_snapshot() -> String:
 	ChunkManager process: %d
 	Octree iterate: %d <- not on main
 	Find Masks: %d <- not on main
+	Cull: %d <- not on main (%d leaves culled)
 	Load Chunks: %d
 	Mark Retirees: %d
 	Check Retirees: %d
@@ -136,6 +149,8 @@ func get_timing_snapshot() -> String:
 		process_time,
 		octree_iterate_time,
 		find_masks_time,
+		cull_time,
+		culled_leaf_count,
 		load_new_chunks_time,
 		mark_retirees_time,
 		check_retirees_time,
@@ -201,7 +216,44 @@ func _compute_leaf_set(local_player_pos: Vector3, current_world: bool) -> Dictio
 	start_time = Time.get_ticks_usec()
 	_find_masks(leaves)
 	find_masks_time = Time.get_ticks_usec() - start_time
+	# Culling comes after the masks: a culled leaf is still the neighbour that decides whether the leaf next to it needs transition cells
+	if current_world:
+		start_time = Time.get_ticks_usec()
+		_apply_cull(leaves, local_player_pos)
+		cull_time = Time.get_ticks_usec() - start_time
 	return leaves
+
+## Flags every leaf that the planet hides from the player with `CULLED_BIT`. Only touches the given dictionary, so it is safe to run on a worker thread.
+func _apply_cull(leaves: Dictionary[Vector4i, int], camera_pos: Vector3) -> void:
+	var culled := 0
+	for key: Vector4i in leaves.keys():
+		if is_hidden(camera_pos, key, CULL_MARGIN):
+			leaves.set(key, leaves[key] | CULLED_BIT)
+			culled += 1
+	culled_leaf_count = culled
+
+## True when the leaf `key` can not be seen from any point within `margin` of `camera_pos`, because the solid ball of radius `occluder_radius` around the planet's center is in the way. Conservative: the leaf's bounding sphere has to lie wholly in the shadow of the ball, behind the circle where the view rays touch it. Returns false (nothing is hidden) when there is no occluder, the camera is at or within `margin` of the ball, or the camera is within `margin` of the leaf's bounding sphere.
+func is_hidden(camera_pos: Vector3, key: Vector4i, margin: float) -> bool:
+	if occluder_radius <= 0.0: return false
+	var to_center := noise.center - camera_pos
+	var center_distance := to_center.length()
+	if center_distance <= occluder_radius + margin + 1.0: return false
+	var side := float(key.w * CHUNK_SIZE)
+	var leaf_center := Vector3(key.x, key.y, key.z) + Vector3(side, side, side) / 2.0
+	var leaf_radius := side * 0.8660254 # half the diagonal of the leaf's box
+	var to_leaf := leaf_center - camera_pos
+	var leaf_distance := to_leaf.length()
+	if leaf_distance <= leaf_radius + margin: return false
+	var axis := to_center / center_distance
+	var axial_depth := to_leaf.dot(axis)
+	# The angle of the leaf from the center of the ball, plus the most it can grow by the leaf's size and the camera moving by `margin`, has to fit inside the cone of view rays that touch the ball
+	var leaf_angle := acos(clampf(axial_depth / leaf_distance, -1.0, 1.0))
+	var largest_leaf_angle := leaf_angle + asin(minf(1.0, (leaf_radius + margin) / leaf_distance)) + asin(minf(1.0, margin / center_distance))
+	var farthest_distance := center_distance + margin
+	if largest_leaf_angle >= asin(minf(1.0, occluder_radius / farthest_distance)): return false
+	# Inside that cone, anything beyond the circle where the cone touches the ball is behind the ball
+	var tangent_depth := farthest_distance - occluder_radius * occluder_radius / farthest_distance
+	return axial_depth - leaf_radius - margin >= tangent_depth + margin
 
 ## Iterate through the octree, starting at the root node, and determine what chunks need to be split until depth reaches max_octree_depth. Leaves are added to `leaves` as Vector4i(x, y, z, lod_step) with a mask of 0.
 func _octree_iterate(leaves: Dictionary[Vector4i, int], local_player_pos: Vector3, depth: int = 0, parent_pos: Vector3 = Vector3.ZERO) -> void:
@@ -320,7 +372,8 @@ func _end_phase() -> void:
 
 ## Compare one leaf of new_chunk_set against the existing chunks and load, revive or update the chunk for it.
 func _load_chunk(key: Vector4i) -> void:
-	var mask: int = new_chunk_set.get(key, 0)
+	var leaf_value: int = new_chunk_set.get(key, 0)
+	var mask := leaf_value & TRANSITION_MASK_BITS
 	var chunk: Chunk = null
 	# if new chunk already exists but is READY_TO_DIE or is RETIRING, set as ACTIVE and add its volume to the retiring ancestor's volume counter if applicable
 	if ready_to_die_chunk_set.has(key):
@@ -342,7 +395,21 @@ func _load_chunk(key: Vector4i) -> void:
 		_load_octree_chunk(Vector3i(key.x, key.y, key.z), key.w)
 		return
 	chunk.desired_transition_mask = mask
-	_remesh_if_needed(chunk)
+	if leaf_value & CULLED_BIT:
+		_cull_chunk(chunk)
+	else:
+		chunk.is_culled = false
+		_remesh_if_needed(chunk)
+
+## An ACTIVE chunk that the planet now hides: drop its mesh and collider and take it out of the tree. It stays ACTIVE (it still covers its space for the retire bookkeeping) and is meshed again when it comes back into view.
+func _cull_chunk(chunk: Chunk) -> void:
+	if chunk.is_culled or chunk.is_empty: return
+	chunk.is_culled = true
+	var mesh_instance := chunk.find_child("ChunkMesh", true, false)
+	if mesh_instance: mesh_instance.free()
+	if chunk.get_parent() != null: chunk.get_parent().remove_child(chunk)
+	chunk.mesh_data = null
+	chunk.built_transition_mask = -1
 
 func _revive_chunk(key: Vector4i, chunk: Chunk) -> void:
 	active_chunk_set.set(key, chunk)
@@ -351,7 +418,7 @@ func _revive_chunk(key: Vector4i, chunk: Chunk) -> void:
 
 ## Starts a new mesh generation for an ACTIVE chunk if its built transition mask differs from the desired one and no task is running for it.
 func _remesh_if_needed(chunk: Chunk) -> void:
-	if chunk.is_empty or chunk.thread_id != -1: return
+	if chunk.is_empty or chunk.is_culled or chunk.thread_id != -1: return
 	if chunk.desired_transition_mask != chunk.built_transition_mask:
 		_schedule_generation(chunk, chunk.desired_transition_mask)
 
@@ -449,12 +516,21 @@ func get_parent_key(chunk: Chunk = null, key: Vector4i = Vector4i.ZERO) -> Vecto
 func _load_octree_chunk(chunk_pos: Vector3i, lod_step: int) -> void:
 	var new_chunk := Chunk.new(CHUNK_SIZE, noise, chunk_pos, lod_step)
 	var chunk_key := Vector4i(chunk_pos.x, chunk_pos.y, chunk_pos.z, lod_step)
-	var mask: int = new_chunk_set.get(chunk_key, 0)
+	var leaf_value: int = new_chunk_set.get(chunk_key, 0)
+	var mask := leaf_value & TRANSITION_MASK_BITS
 	new_chunk.desired_transition_mask = mask
 	new_chunk.position = chunk_pos
 
 	if new_chunk.is_provably_empty():
 		new_chunk.built_transition_mask = mask
+		new_chunk.state = Chunk.chunk_state.ACTIVE
+		active_chunk_set.set(chunk_key, new_chunk)
+		_chunk_became_active(new_chunk)
+		return
+
+	# Hidden by the planet: ACTIVE right away like an empty chunk, but remembered so that it is generated when it comes into view
+	if leaf_value & CULLED_BIT:
+		new_chunk.is_culled = true
 		new_chunk.state = Chunk.chunk_state.ACTIVE
 		active_chunk_set.set(chunk_key, new_chunk)
 		_chunk_became_active(new_chunk)
@@ -513,6 +589,14 @@ func _finish_chunk(chunk: Chunk) -> void:
 			pending_chunk_set.erase(pending_key)
 			chunk.free()
 			return
+
+	# The planet may have come between the player and the chunk while its data was generated: keep the chunk, drop the data
+	var finished_key := Vector4i(chunk.position.x, chunk.position.y, chunk.position.z, chunk.lod_step)
+	if chunk.is_culled or new_chunk_set.get(finished_key, 0) & CULLED_BIT:
+		if chunk.state == Chunk.chunk_state.PROCESSING: chunk.is_culled = true
+		else: _cull_chunk(chunk)
+		chunk.mesh_data = null
+		chunk.built_transition_mask = -1
 
 	if chunk.mesh_data != null:
 		# Chunks only join the scene tree once they have something to show

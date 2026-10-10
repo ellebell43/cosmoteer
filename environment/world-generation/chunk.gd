@@ -47,6 +47,8 @@ var volume_counter := 0
 var desired_transition_mask := -1
 ## A 6-bit value defining the faces that are currently implementing transition cells
 var built_transition_mask := -1
+## True while the planet hides this chunk from the player. A culled chunk is ACTIVE but has no mesh, collider or place in the tree, and is not remeshed until it is visible again.
+var is_culled := false
 ## True once it is known that this chunk can never have a mesh (no surface crosses it). Empty chunks are never remeshed.
 var is_empty := false
 ## The ID of the worker thread that is constructing the mesh data. When -1, there is no thread and therefore the chunk is not building any mesh data.
