@@ -1,5 +1,5 @@
 extends SceneTree
-## Smoke test of the real game scene. Waits for the loading screen, then keeps the player flying (the game drops them to the ground, where, with the first octree pass made before the planet is flagged current, they fall through the coarse root chunk until they have moved 10 m), nudges them past the movement threshold, and measures how long it takes until a ray straight down (80 m) hits a LOD 1 collider (layer 2 "Planet").
+## Smoke test of the real game scene. Waits for the loading screen, then keeps the player flying, nudges them past the movement threshold, and measures how long it takes until a ray straight down (80 m) hits a LOD 1 collider (layer 2 "Planet").
 ##   godot --headless --path . -s tools/bench/check_game_scene.gd
 var sys: Node
 var frame := 0
