@@ -82,7 +82,7 @@ func _determine_if_cell_is_empty() -> bool:
 	var opposite_corner := offset + Vector3(axis_length, axis_length, axis_length)
 	var minimum_distance: float = scalar.center.clamp(offset, opposite_corner).distance_to(scalar.center)
 	var min_bias: float = scalar.get_bias_from_distance(minimum_distance)
-	if min_bias > scalar.BIAS_THRESHOLD: mesh_data = null; return true
+	if min_bias > scalar.bias_threshold: mesh_data = null; return true
 
 	var max_x: float = abs(offset.x - scalar.center.x)
 	var min_x: float = abs((offset.x + (size) * lod_step) - scalar.center.x)
@@ -103,7 +103,7 @@ func _determine_if_cell_is_empty() -> bool:
 	else: zm = min_z
 
 	var max_bias := scalar.get_bias_from_distance(sqrt(xm * xm + ym * ym + zm * zm))
-	if max_bias < -scalar.BIAS_THRESHOLD: mesh_data = null; return true
+	if max_bias < -scalar.bias_threshold: mesh_data = null; return true
 
 	return false
 
@@ -114,24 +114,11 @@ class SampleSetReturnType:
 
 ## Returns the scalar values needed to generate mesh data, or null when every on-grid sample is on the same side of the surface (no mesh needed). `corner_samples` holds one value per grid point: index = x * x_stride + y * y_stride + z. `transition_samples` holds one `face_stride * face_stride` slice of those values for each face whose bit is set in `mask` (x,y,z,-x,-y,-z); the other entries are empty.
 func _construct_sample_set(mask: int = 0) -> SampleSetReturnType:
-	var corner_samples: PackedFloat32Array = []
-	corner_samples.resize((size + 1) * (size + 1) * (size + 1))
-	# used at the end of the function. If all on-grid samples are above or if all are below, then no mesh is needed
-	var is_all_above := true
-	var is_all_below := true
+	var grid := scalar.sample_grid(offset, lod_step, size + 1)
+	var corner_samples := grid.values
 
-	for x in size + 1:
-		var x_value := x * lod_step + offset.x
-		for y in size + 1:
-			var y_value := y * lod_step + offset.y
-			for z in size + 1:
-				var z_value := z * lod_step + offset.z
-				var corner_sample := scalar.sample(x_value, y_value, z_value)
-				corner_samples[x * x_stride + y * y_stride + z] = corner_sample
-				if corner_sample > isosurface: is_all_below = false
-				if corner_sample < isosurface: is_all_above = false
-
-	if is_all_above or is_all_below:
+	# If every on-grid sample is on the same side of the surface, no mesh is needed
+	if grid.lowest >= isosurface or grid.highest <= isosurface:
 		return null
 
 	var return_data := SampleSetReturnType.new()

@@ -112,6 +112,9 @@ var n_color := 0
 func sample(x, y, z):
 	n_sample += 1
 	return super.sample(x, y, z)
+func sample_grid(o, st, c):
+	n_sample += c * c * c
+	return super.sample_grid(o, st, c)
 func get_biome_color(p):
 	n_color += 1
 	return super.get_biome_color(p)

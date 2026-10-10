@@ -19,7 +19,7 @@ Code lives in `environment/world-generation/`.
   - `mountain_noise` (ridged simplex) scaled by `mountain_curve.sample(base_elevation)` × `MOUNTAIN_AMPLITUDE`, so mountains only appear at elevations the curve allows
   - plus small `hill_noise` and `detail_noise` terms
 - `get_biome_color` maps elevation bands to vertex colours (deep water → water → sand → grass → rock).
-- `BIAS_THRESHOLD`: used by `Chunk._determine_if_cell_is_empty()` to skip sampling cells that are certainly all-air/all-solid.
+- `bias_threshold`: derived in `WorldNoise._init()` from the curves and amplitudes (a bound on |elevation| × `FLOOR_BIAS`). Used by `Chunk._determine_if_cell_is_empty()` to skip sampling cells that are certainly all-air/all-solid. `sample_grid()` samples a whole chunk grid in one call.
 
 Tuning knobs: noise frequencies/octaves in `WorldNoise._init`, the amplitude constants, and the two curves. Curve domains/ranges are documented on the `@export` vars in `planet.gd`.
 
