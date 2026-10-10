@@ -94,21 +94,31 @@ func _compare() -> void:
 		if not a.has(k): problems += 1
 	print("settled: active=%d leaves=%d (active not in leaf set: %d)  fresh active=%d" % [a.size(), mgr.new_chunk_set.size(), stale_keys, b.size()])
 	var mesh_mismatch := 0; var mask_mismatch := 0; var missing := 0; var with_mesh := 0; var wrong_state := 0; var tree_nodes := 0
+	var cull_differs := 0; var cull_inconsistent := 0
+	# Culling depends on the margin, which depends on how fast the player was moving, so the settled and the fresh manager may cull different leaves. Each manager must be consistent with its own leaf set, and chunks visible in both must match.
+	for k in a:
+		var cc = a[k]
+		# (empty chunks are never culled: they have nothing to drop)
+		if "is_culled" in cc and not cc.is_empty:
+			var flagged: bool = (mgr.new_chunk_set.get(k, 0) & 64) != 0
+			if cc.is_culled != flagged: cull_inconsistent += 1
+			if cc.is_culled and (cc.mesh_data != null or cc.get_parent() != null): cull_inconsistent += 1
+		if cc.mesh_data != null: with_mesh += 1
 	for k in b:
 		if not a.has(k): missing += 1; continue
 		var ca = a[k]; var cb = b[k]
 		if ca.state != 1: wrong_state += 1
+		if "is_culled" in ca and ca.is_culled != cb.is_culled: cull_differs += 1; continue
 		var ma = ca.mesh_data; var mb = cb.mesh_data
 		if (ma == null) != (mb == null): mesh_mismatch += 1
 		elif ma != null:
-			with_mesh += 1
 			if ma.surface_get_array_len(0) != mb.surface_get_array_len(0): mesh_mismatch += 1
 			if ca.built_transition_mask != cb.built_transition_mask: mask_mismatch += 1
 			if ca.get_parent() == null: problems += 1
 	for c in mgr.get_children():
 		if c.has_method("build_mesh"): tree_nodes += 1
-	print("compare vs fresh load: missing=%d mesh_mismatch=%d mask_mismatch=%d wrong_state=%d  chunks_with_mesh=%d chunk_nodes_in_tree=%d other_problems=%d" % [missing, mesh_mismatch, mask_mismatch, wrong_state, with_mesh, tree_nodes, problems])
-	print("RESULT: ", "OK" if (missing + mesh_mismatch + mask_mismatch + wrong_state + problems + stale_keys) == 0 and tree_nodes == with_mesh else "FAILED")
+	print("compare vs fresh load: missing=%d mesh_mismatch=%d mask_mismatch=%d wrong_state=%d  chunks_with_mesh=%d chunk_nodes_in_tree=%d other_problems=%d  (culled in one manager only: %d, culled but inconsistent: %d)" % [missing, mesh_mismatch, mask_mismatch, wrong_state, with_mesh, tree_nodes, problems, cull_differs, cull_inconsistent])
+	print("RESULT: ", "OK" if (missing + mesh_mismatch + mask_mismatch + wrong_state + problems + stale_keys + cull_inconsistent) == 0 and tree_nodes == with_mesh else "FAILED")
 
 ## Debug aid: classifies chunks that stay RETIRING after the manager went quiet.
 func _dump_stuck() -> void:

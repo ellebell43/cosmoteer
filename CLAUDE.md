@@ -47,7 +47,7 @@ utils.gd       "Utils" autoload: global signals and the debug flag
 
 ## Gotchas
 
-- Work happens on feature branches; `master` is the main branch. This repo has no remote yet.
+- Work happens on feature branches; `master` is the main branch. The remote is `origin` (https://github.com/ellebell43/cosmoteer.git). Still only push when asked.
 - Every `.gd` has a committed `.uid` file (Godot generates them). Commit new ones alongside new scripts; never delete them by hand.
 - Godot also writes `.import` files and edits `project.godot`/`.tscn` itself when the editor opens; expect those diffs.
 - Ignore `.godot/` when searching; it's generated.

@@ -6,6 +6,7 @@ Code lives in `environment/world-generation/`.
 
 1. `Planet._ready()` builds a `WorldNoise` from `world_seed`, volume size, `floor_distance`, `sea_level_modifier`, and the two `Curve` resources (`continent_curve`, `mountain_curve`; defaults in `slope_curves/`).
 2. `ChunkManager` runs an **octree** over the noise volume. Cells near the player split into finer cells; far cells stay coarse. Each leaf is a chunk key `Vector4i(x, y, z, lod_step)`. The octree and each leaf's transition mask are computed on a **worker thread** into a fresh dictionary (`_compute_leaf_set()`); the main thread swaps it into `new_chunk_set` when done.
+   After the masks, `_apply_cull()` flags every leaf that the planet hides from the player with `CULLED_BIT` (64, above the 6 mask bits) in the leaf's value. See "Culling" below.
 3. Each leaf becomes a `Chunk`. Chunks that can never have a mesh (`Chunk.is_provably_empty()`, an O(1) bounds test) are ACTIVE immediately and never get a task or a scene node. For the others, mesh data is generated on a `WorkerThreadPool` thread using **Transvoxel** (Marching Cubes + transition cells for LOD seams).
 4. A finishing worker pushes its chunk onto a mutex-guarded queue. The main thread drains it in `_process`, capped at `MAXIMUM_BUILD_TIME` (µs) per frame; `build_mesh()` creates the actual mesh. A chunk joins the scene tree only once it has a mesh.
 
@@ -27,7 +28,7 @@ Tuning knobs: noise frequencies/octaves in `WorldNoise._init`, the amplitude con
 
 `Chunk.chunk_state`: `PROCESSING → ACTIVE → RETIRING → READY_TO_DIE → freed`
 
-ChunkManager keeps one dictionary per stage (`pending_`, `active_`, `retiring_`, `ready_to_die_chunk_set`, plus `new_chunk_set` for the desired leaves from the latest octree pass).
+Culled chunks are ACTIVE (see "Culling"). ChunkManager keeps one dictionary per stage (`pending_`, `active_`, `retiring_`, `ready_to_die_chunk_set`, plus `new_chunk_set` for the desired leaves from the latest octree pass).
 
 - Player moves ≥ `player_movement_threshold` (10 m): start a **leaf job** on a worker (only one in flight; by the time it finishes the player has usually moved on, which simply starts the next one).
 - A finished leaf set starts a **reconcile**, spread over frames with a `RECONCILE_BUDGET` (µs) per frame, in this order:
@@ -38,6 +39,39 @@ ChunkManager keeps one dictionary per stage (`pending_`, `active_`, `retiring_`,
   5. `KILL` (`_unload_octree_chunk`): fades the mesh out with a tween, then `queue_free()`s, but only after its worker task has been collected.
 - A chunk becoming ACTIVE marks the manager "dirty"; a retire/kill pass (CHECK → COVERAGE → KILL) then runs at most every `CLEANUP_INTERVAL`, so retirees do not wait for the next 10 m of movement.
 - A new chunk whose key is no longer in `new_chunk_set` when its task finishes is dropped instead of shown.
+
+## Culling
+
+Leaves the player can not see are flagged with `CULLED_BIT` in `new_chunk_set` (by `_apply_cull()` on the leaf-job worker, current world only; other planets keep their single root chunk). Two tests, both conservative on the leaf's bounding sphere:
+
+- **Horizon** (`is_hidden(camera_pos, key, margin)`): the leaf lies wholly in the shadow of the planet's solid inner ball, radius `occluder_radius = sea_level - bias_threshold / FLOOR_BIAS` (the surface is never closer to the centre; 72 m below sea level with the default curves). It has to sit inside the cone of view rays that touch the ball, behind the circle where they touch it.
+- **Far plane** (`is_beyond_view()`): the leaf is further than `_get_cull_distance()` from the camera. That is the distance to the *corners* of the far plane (`far * sqrt(1 + tan_x² + tan_y²)`, 7,429 m for the default camera at 16:9), because the camera can turn: a plain `far` would cull chunks that are visible in a corner of the screen. Read from `player.camera` (far, fov, keep-aspect) and the viewport; falls back to Camera3D's defaults when there is no camera. INF for a non-perspective camera.
+
+Both tests assume the camera may be anywhere within `margin` of the player, and give up (cull nothing) when the camera is within the margin of the ball or of the leaf.
+
+**The margin is dynamic** (`get_cull_margin()`): `player_movement_threshold + latency * player_speed * CULL_LATENCY_SAFETY (2)`.
+- `player_speed` is measured on the main thread in the planet's frame (so planet rotation doesn't count). It rises at once and decays with a 2 s half-life.
+- `latency` is the larger of: the slowest recently measured time for a chunk to come back into view (from the start of the leaf job that revealed it to its mesh being built; starts at 1 s, floor 0.5 s, 30 s half-life); the time since the leaf job started plus 0.25 s, for the slowest recent leaf set to be applied; and the time the chunks still waiting after being revealed have waited so far, so a backlog widens the margin before those chunks finish.
+- Above `MAXIMUM_CULL_MARGIN` (300 m) nothing is culled: the player is too fast for culled chunks to be brought back in time. Near the surface the horizon test also stops by itself once the margin exceeds the ~72 m between the surface and the ball, so at ground level it works up to roughly 40–60 m/s; at altitude and for the far-plane test it works up to a few hundred m/s.
+
+How culled leaves are handled:
+- **They stay in `new_chunk_set`** (value `mask | CULLED_BIT`). Dropping them instead leaves their parents RETIRING forever, because the parent's volume is never fully covered (tested). Read the value as `value & TRANSITION_MASK_BITS` (the mask) and `value & CULLED_BIT`.
+- Masks are computed **before** culling, so a culled neighbour still decides whether the leaf next to it gets transition cells.
+- A new culled leaf becomes an ACTIVE chunk with no task, mesh or node (like a provably empty one) and `is_culled = true`. `_cull_chunk()` does the same to an existing chunk: frees its `ChunkMesh` and collider, removes it from the tree, resets `built_transition_mask`. A chunk that is visible again (`is_culled` cleared in `_load_chunk`) is meshed through `_remesh_if_needed()`, which skips culled chunks. A chunk whose data arrives after it was culled drops the data in `_finish_chunk()`.
+- A settled manager and a fresh load can cull different leaves, because their margins depend on how fast the player was going. `check_settle.gd` therefore checks each manager against its own leaf set and compares meshes only where both show the chunk.
+
+Measured effect (meshable leaves culled, player at the surface / at 3 km altitude, margin 32 m):
+
+| Planet size | Horizon | Far plane | Either |
+|---|---|---|---|
+| 9 | 6% / 15% | 0% / 10% | 6% / 18% |
+| 10 | 7% / 13% | 3% / 31% | 7% / 31% |
+| 12 | 8% / 18% | 12% / 59% | 12% / 59% |
+| 14 | 8% / 18% | 19% / 73% | 19% / 73% |
+
+At the surface the far hemisphere holds only ~3% of the meshable leaves (it is coarse); the rest is the fine ring around the player, which a worst-case ball can't prove hidden even though real terrain hides most of it at ground level. Not done: culling to the camera frustum (Godot already does that when rendering, and turning would force regeneration of the fine ring).
+
+Checks: `check_cull.gd` (rays through the real field for the horizon test, frustum planes for the far-plane test, no near leaf culled, masks unchanged), `check_cull_flight.gd` (no holes while flying; verified at up to 100 m/s at the surface and 200 m/s at 1 km on size 10, and 300 m/s at 500 m on size 12, where culling switches itself off), `check_settle.gd`.
 
 ## Transvoxel notes
 
