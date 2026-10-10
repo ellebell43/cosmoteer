@@ -6,6 +6,9 @@ const WIREFRAME_MATERIAL := preload("res://assets/textures/wireframe-material.tr
 ## Material shared by every chunk mesh. Created on first use (always on the main thread, in `build_mesh()`).
 static var _shared_material: StandardMaterial3D
 
+## Meshes are created on worker threads, one chunk per thread. Stress tests (tools/bench/stress_move.gd) crashed the engine inside `ArrayMesh.add_surface_from_arrays()` now and then when many threads created meshes at the same moment, so creation is serialized. It is a small part of generating a chunk, so generation itself stays parallel.
+static var _mesh_creation_mutex := Mutex.new()
+
 # ============ DEBUG PROPERTIES ============
 
 var wireframe_mode = false
@@ -304,8 +307,10 @@ func _generate_mesh_data(corner_samples: PackedFloat32Array, transition_mask: in
 	surface_arrays[Mesh.ARRAY_COLOR] = mesh_colors
 	
 	# create the mesh and assign data to it
+	_mesh_creation_mutex.lock()
 	var array_mesh := ArrayMesh.new()
 	array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surface_arrays)
+	_mesh_creation_mutex.unlock()
 	return array_mesh
 
 ## Create the transitional data for cells on the transition face of a chunk

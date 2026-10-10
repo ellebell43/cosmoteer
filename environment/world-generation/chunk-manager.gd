@@ -4,9 +4,9 @@ class_name ChunkManager
 ## The size of each chunk in meters
 const CHUNK_SIZE := 16
 ## Maximum time in microseconds per frame spent turning finished worker results into meshes
-const MAXIMUM_BUILD_TIME := 4000
+const MAXIMUM_BUILD_TIME := 3000
 ## Maximum time in microseconds per frame spent reconciling the desired leaf set with the existing chunks (load / retire / kill passes)
-const RECONCILE_BUDGET := 2000
+const RECONCILE_BUDGET := 1500
 ## Minimum time in microseconds between retire/kill passes that are not triggered by a new leaf set
 const CLEANUP_INTERVAL := 250000
 ## Bit order of the transition mask, matching `Chunk`: x, y, z, -x, -y, -z
@@ -56,6 +56,8 @@ var leaf_job_task := -1
 var _leaf_job_result: Dictionary[Vector4i, int] = {}
 ## True when `_leaf_job_result` holds a finished leaf set that has not been applied yet
 var _leaf_result_ready := false
+## Set when the manager leaves the tree. Tasks that have not started yet return immediately.
+var _shutting_down := false
 
 # ========== FINISHED CHUNK QUEUE ==========
 
@@ -111,6 +113,16 @@ func _init(_player: Player, _seed: int, _max_octree_depth: int, _noise: WorldNoi
 func _ready() -> void:
 	# if global Util.debug is true, print total chunk count volume
 	if Utils.debug: print("Chunk manager ready. Total chunk count: ", int(pow(chunk_count, 3)))
+
+## Workers use this manager's members, so none may still run when it is freed.
+func _exit_tree() -> void:
+	_shutting_down = true
+	for task_id in pending_tasks.keys():
+		WorkerThreadPool.wait_for_task_completion(task_id)
+	pending_tasks.clear()
+	if leaf_job_task != -1:
+		WorkerThreadPool.wait_for_task_completion(leaf_job_task)
+		leaf_job_task = -1
 
 func get_timing_snapshot() -> String:
 	return "
@@ -176,6 +188,7 @@ func _process(_delta: float) -> void:
 
 ## Worker task body: computes the next leaf set into `_leaf_job_result`.
 func _leaf_job(local_player_pos: Vector3, current_world: bool) -> void:
+	if _shutting_down: return
 	_leaf_job_result = _compute_leaf_set(local_player_pos, current_world)
 
 ## Builds the octree for the given player position and gives every leaf its transition mask. Returns a new dictionary and does not touch any manager state other than the timing variables, so it is safe to run on a worker thread.
@@ -458,6 +471,7 @@ func _schedule_generation(chunk: Chunk, mask: int) -> void:
 
 ## Worker task body: generates the mesh data, then hands the chunk to the main thread.
 func _generate_chunk_task(chunk: Chunk, mask: int) -> void:
+	if _shutting_down: return
 	chunk.generate_mesh_data(mask)
 	_finished_mutex.lock()
 	_finished_chunks.append(chunk)
