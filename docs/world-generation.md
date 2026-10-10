@@ -81,6 +81,7 @@ Still open:
 
 - Even after batching, per-chunk cost is dominated by `WorldNoise` sampling (4–6 native calls per point) and per-vertex `get_biome_color()` (6 native calls). Deriving colour from the surface distance, a baked table for the `Curve`s, or a native/GPU noise pass would remove most of it, at the cost of slightly different values or a native toolchain.
 - The first reconcile (the whole initial leaf set) is not time-sliced: ~100 ms behind the loading screen.
+- **Pre-existing:** the first octree pass runs before the planet is flagged `is_current_world`, so it produces only the coarse root chunk. The loading screen therefore finishes after one task and releases the player, who falls through the coarse chunk until they have moved 10 m and the detailed terrain starts. `tools/bench/check_game_scene.gd` works around it by keeping the player in fly mode. (After that, ground collision appears ~3 s later; it took ~11 s with the original manager.)
 - Transition cells fix seams across *faces* only. Chunks of different LOD that share just a corner or edge can still leave cracks (issue #5).
 - Non-current planets only keep a single root chunk (cheap), but check the transition when a planet becomes current.
 - Scale: planets up to size 19 are allowed; large sizes stress float precision, which is why the project uses the double-precision Godot build.

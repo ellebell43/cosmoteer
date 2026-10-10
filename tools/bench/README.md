@@ -11,6 +11,7 @@ Headless scripts used to measure `chunk.gd` / `chunk-manager.gd`. Run from the r
 | `check_leaf_set.gd` | Leaf set + transition masks equal a reference implementation (the original manager, see the script header) | `-s tools/bench/check_leaf_set.gd -- <reference chunk-manager.gd>` |
 | `check_settle.gd` | End-state test: fly fast, stop, wait for the manager to settle, compare with a fresh load at the same spot | `-s tools/bench/check_settle.gd -- <depth> <seconds> <m_per_s>` |
 | `stress_move.gd` | Crash stress: fly fast, print `DONE`; a run without `DONE` crashed | `-s tools/bench/stress_move.gd -- 8 6 100 [manager.gd]` |
+| `check_game_scene.gd` | The real `system.tscn`: loading screen finishes, and a ray down from the player hits a LOD 1 collider; prints how long that took after moving 12 m | `-s tools/bench/check_game_scene.gd` |
 | `bench_parallel.gd` | Thread scaling of chunk generation | `-s tools/bench/bench_parallel.gd -- chunk` |
 | `bench_calls.gd` | Thread scaling of different call kinds (shows why call count matters) | `-s tools/bench/bench_calls.gd` |
 
