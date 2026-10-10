@@ -1,0 +1,21 @@
+[gd_scene format=3 uid="uid://p50l0yu47556"]
+
+[ext_resource type="Script" uid="uid://cmskads32bpav" path="res://environment/world-generation/planet.gd" id="1_ihk74"]
+
+[sub_resource type="SphereShape3D" id="SphereShape3D_74117"]
+
+[node name="Planet" type="Node3D" unique_id=1766259659]
+script = ExtResource("1_ihk74")
+
+[node name="GravityArea" type="Area3D" parent="." unique_id=2145813888]
+collision_layer = 2
+gravity_space_override = 3
+gravity_point = true
+gravity_point_center = Vector3(0, 0, 0)
+gravity_direction = Vector3(0, 0, 0)
+
+[node name="GravityShape" type="CollisionShape3D" parent="GravityArea" unique_id=1006933701]
+shape = SubResource("SphereShape3D_74117")
+
+[connection signal="body_entered" from="GravityArea" to="." method="_on_gravity_area_body_entered"]
+[connection signal="body_exited" from="GravityArea" to="." method="_on_gravity_area_body_exited"]

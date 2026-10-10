@@ -1,0 +1,7 @@
+[gd_resource type="ShaderMaterial" format=3 uid="uid://4ovt2mo00t4a"]
+
+[ext_resource type="Shader" uid="uid://bt0ch4hrlp1ti" path="res://assets/shaders/wireframe.gdshader" id="1_k1wsu"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_k1wsu")

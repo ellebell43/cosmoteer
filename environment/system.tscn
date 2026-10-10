@@ -1,0 +1,46 @@
+[gd_scene format=3 uid="uid://dmj3gcid0qbdm"]
+
+[ext_resource type="PackedScene" uid="uid://dhucnlt37jkjb" path="res://environment/default-environment.tscn" id="1_7xck8"]
+[ext_resource type="Script" uid="uid://b11hkxqpgekum" path="res://environment/system.gd" id="1_br15j"]
+[ext_resource type="PackedScene" uid="uid://bauo30v5lrxcu" path="res://actors/player.tscn" id="2_br15j"]
+[ext_resource type="PackedScene" uid="uid://p50l0yu47556" path="res://environment/world-generation/planet.tscn" id="3_wam8f"]
+[ext_resource type="PackedScene" uid="uid://bgaakqdq45o0s" path="res://interface/debug.tscn" id="5_wam8f"]
+
+[node name="System" type="Node3D" unique_id=1029309 node_paths=PackedStringArray("player")]
+script = ExtResource("1_br15j")
+player = NodePath("Player")
+
+[node name="Environment" parent="." unique_id=1058607106 instance=ExtResource("1_7xck8")]
+
+[node name="Planet" parent="." unique_id=1766259659 node_paths=PackedStringArray("player") instance=ExtResource("3_wam8f")]
+player = NodePath("../Player")
+
+[node name="Player" parent="." unique_id=766571082 node_paths=PackedStringArray("spawn_world") instance=ExtResource("2_br15j")]
+spawn_world = NodePath("../Planet")
+
+[node name="Debug" parent="." unique_id=858674500 node_paths=PackedStringArray("player") instance=ExtResource("5_wam8f")]
+player = NodePath("../Player")
+
+[node name="Loading Screen" type="Control" parent="." unique_id=1965225905]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="ProgressBar" type="ProgressBar" parent="Loading Screen" unique_id=404202410]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -145.0
+offset_top = -13.5
+offset_right = 145.0
+offset_bottom = 13.5
+grow_horizontal = 2
+grow_vertical = 2
+rounded = true

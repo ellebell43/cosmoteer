@@ -1,0 +1,23 @@
+[gd_scene format=3 uid="uid://dhucnlt37jkjb"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_ij1v8"]
+sky_horizon_color = Color(0.66224277, 0.6717428, 0.6867428, 1)
+ground_horizon_color = Color(0.66224277, 0.6717428, 0.6867428, 1)
+
+[sub_resource type="Sky" id="Sky_errlg"]
+sky_material = SubResource("ProceduralSkyMaterial_ij1v8")
+
+[sub_resource type="Environment" id="Environment_bl13t"]
+background_mode = 2
+sky = SubResource("Sky_errlg")
+tonemap_mode = 2
+glow_enabled = true
+
+[node name="Environment" type="Node3D" unique_id=1058607106]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1058202819]
+transform = Transform3D(-0.8660253, -0.4330128, 0.25000003, -0.16535603, 0.7198998, 0.6740931, -0.47186595, 0.5424428, -0.6950527, 0, 0, 0)
+shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=883167396]
+environment = SubResource("Environment_bl13t")
