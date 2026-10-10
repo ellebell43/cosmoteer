@@ -12,7 +12,7 @@ Untitled Sandbox Game: a voxel sandbox where an entire star system is one seamle
 - Commit in small, logical steps on feature branches. Don't push, open PRs, or create remotes unless asked.
 - Keep the docs in `docs/` accurate as the code changes, so they stay a reliable map of the project.
 - Ask before deleting large amounts of existing code or art, and don't modify `blender/` or `assets/` source art destructively.
-- The README's "AI Disclaimer" describes the original repo and is **not true of this one**. Don't edit it unless asked; the human will decide how to handle it.
+- The README's "AI Disclaimer" has been rewritten to say this repo is AI-authored after commit `99e0e55`. Keep it accurate.
 
 ## Docs (read the one relevant to the task)
 
@@ -32,8 +32,7 @@ Set `GODOT_BIN` to the double-precision Godot 4.7 editor binary (the path is in 
 
 There is currently no test suite on this branch (GUT and `test/` were removed in `c731cb5`; `.gutconfig.json` remains). The wireframe debug material now lives in `assets/textures/` and `assets/shaders/`.
 
-Custom slash commands live in `.claude/commands/`: `/explain`, `/review`, `/optimize`, `/teach`. These were written for the original mentor-only workflow, so check them before relying on them; they may still tell you not to edit code.
-
+Custom slash commands live in `.claude/commands/`: `/explain`, `/review`, `/optimize`, `/teach`.
 ## Layout
 
 ```

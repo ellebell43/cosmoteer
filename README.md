@@ -25,4 +25,10 @@ As I am the only person on this project right now, I will be keeping track of de
 
 ## AI Disclaimer
 
-AI is used in this project. However, no AI code is in this project. I use Claude AI as a learning tool. I have it explain concepts, identify optimizations points, and teach me specific concepts I'm not familiar with, and that is it. All code has been created and written out by a human. Any art and music that is added to this project will be made by a human. All contributors to this project are expected to adhere to the same level AI usage (or less). Any code/assets identified to have been made explicitly by AI will be rejected.
+This repository is an experiment in AI-driven development, and it is different from the original project it was copied from.
+
+The code up to the initial commit (`99e0e55`) was written entirely by a human. The original project used Claude strictly as a learning tool (explaining concepts, pointing out optimization opportunities, teaching), and its history was intentionally dropped when this copy was made.
+
+Everything after that commit is written by Claude (Anthropic's AI), working with the repository owner, who sets direction and reviews the results. Commits made by Claude are marked with a `Co-Authored-By: Claude` trailer. Art and music in the repo (`assets/`, `blender/`) are human-made originals; any new assets are noted as such when added.
+
+Because of this, the original project's rule against AI code does not apply here, and this repo is not accepting outside contributions that assume it does.
