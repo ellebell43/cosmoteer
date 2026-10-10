@@ -77,6 +77,7 @@ func _get_field_normal(v):
 				var mesh: ArrayMesh = null
 				var empty := false
 				for r in reps:
+					if "_normal_cache" in chunk: chunk._normal_cache.clear()
 					var t0 := Time.get_ticks_usec()
 					var sd = chunk._construct_sample_set(mask)
 					var t1 := Time.get_ticks_usec()
