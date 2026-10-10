@@ -23,7 +23,7 @@ System (environment/system.gd, Node3D)
 - **System**: waits for the spawn planet's first batch of chunks (loading progress bar), then un-freezes the player (`ready_for_player`) and frees the loading screen.
 - **Planet**: owns the `WorldNoise` and creates its `ChunkManager` in `_ready()`. Rotates itself each physics frame around `rotation_axis`. Its `GravityArea` tells the player when they enter/leave (`current_world`) and flips `is_current_world`.
 - **ChunkManager**: created in code (`ChunkManager.new(...)`), positioned at `-total_volume / 2` so the planet's centre sits at the Planet node's origin. Owns all chunks for that planet.
-- **Chunk**: one cube of terrain at one LOD, owns its mesh data and thread id. It only joins the scene tree once it has a mesh (empty chunks exist as data only). `build_mesh()` adds a `ChunkMesh` child with a shared material; only `lod_step == 1` chunks get a trimesh collider (collision layer 2 "Planet", mask 1 "Player"), so distant terrain has no physics cost.
+- **Chunk**: one cube of terrain at one LOD, owns its mesh data and thread id. It only joins the scene tree once it has a mesh (empty chunks and chunks hidden by the planet exist as data only). `build_mesh()` adds a `ChunkMesh` child with a shared material; only `lod_step == 1` chunks get a trimesh collider (collision layer 2 "Planet", mask 1 "Player"), so distant terrain has no physics cost.
 - **WorldNoise** (`RefCounted`): pure scalar-field function; no scene presence. Shared by the planet's spawn search and its chunks.
 - **Player**: has `spawn_world: Planet`, `current_world`, `fly_mode`, `allow_inputs`. Must be below all Planets in the tree, because `Planet.get_valid_spawn_point()` needs the planet ready first. Orients itself to gravity every physics frame (`get_planet_aligned_basis`, slerped).
 - **Debug**: overlay showing FPS, active chunk count, player coordinates relative to the current planet, and the ChunkManager timing snapshot. Reads `player.current_world.chunk_manager`.
@@ -45,7 +45,7 @@ System (environment/system.gd, Node3D)
 
 ## Current-world vs. distant-world
 
-Only the planet the player is inside gravity range of (`is_current_world`) runs full octree LOD refinement around the player. Other planets collapse to a single coarse root chunk (see `_octree_iterate` in `chunk-manager.gd`). This is how multiple planets stay affordable in one scene.
+Only the planet the player is inside gravity range of (`is_current_world`) runs full octree LOD refinement around the player, and horizon culling of the chunks the planet hides (see `docs/world-generation.md`). Other planets collapse to a single coarse root chunk (see `_octree_iterate` in `chunk-manager.gd`). This is how multiple planets stay affordable in one scene.
 
 ## Planned (not built yet)
 

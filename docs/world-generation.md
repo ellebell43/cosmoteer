@@ -6,6 +6,7 @@ Code lives in `environment/world-generation/`.
 
 1. `Planet._ready()` builds a `WorldNoise` from `world_seed`, volume size, `floor_distance`, `sea_level_modifier`, and the two `Curve` resources (`continent_curve`, `mountain_curve`; defaults in `slope_curves/`).
 2. `ChunkManager` runs an **octree** over the noise volume. Cells near the player split into finer cells; far cells stay coarse. Each leaf is a chunk key `Vector4i(x, y, z, lod_step)`. The octree and each leaf's transition mask are computed on a **worker thread** into a fresh dictionary (`_compute_leaf_set()`); the main thread swaps it into `new_chunk_set` when done.
+   After the masks, `_apply_cull()` flags every leaf that the planet hides from the player with `CULLED_BIT` (64, above the 6 mask bits) in the leaf's value. See "Horizon culling" below.
 3. Each leaf becomes a `Chunk`. Chunks that can never have a mesh (`Chunk.is_provably_empty()`, an O(1) bounds test) are ACTIVE immediately and never get a task or a scene node. For the others, mesh data is generated on a `WorkerThreadPool` thread using **Transvoxel** (Marching Cubes + transition cells for LOD seams).
 4. A finishing worker pushes its chunk onto a mutex-guarded queue. The main thread drains it in `_process`, capped at `MAXIMUM_BUILD_TIME` (µs) per frame; `build_mesh()` creates the actual mesh. A chunk joins the scene tree only once it has a mesh.
 
@@ -27,7 +28,7 @@ Tuning knobs: noise frequencies/octaves in `WorldNoise._init`, the amplitude con
 
 `Chunk.chunk_state`: `PROCESSING → ACTIVE → RETIRING → READY_TO_DIE → freed`
 
-ChunkManager keeps one dictionary per stage (`pending_`, `active_`, `retiring_`, `ready_to_die_chunk_set`, plus `new_chunk_set` for the desired leaves from the latest octree pass).
+Culled chunks are ACTIVE (see "Horizon culling"). ChunkManager keeps one dictionary per stage (`pending_`, `active_`, `retiring_`, `ready_to_die_chunk_set`, plus `new_chunk_set` for the desired leaves from the latest octree pass).
 
 - Player moves ≥ `player_movement_threshold` (10 m): start a **leaf job** on a worker (only one in flight; by the time it finishes the player has usually moved on, which simply starts the next one).
 - A finished leaf set starts a **reconcile**, spread over frames with a `RECONCILE_BUDGET` (µs) per frame, in this order:
@@ -38,6 +39,17 @@ ChunkManager keeps one dictionary per stage (`pending_`, `active_`, `retiring_`,
   5. `KILL` (`_unload_octree_chunk`): fades the mesh out with a tween, then `queue_free()`s, but only after its worker task has been collected.
 - A chunk becoming ACTIVE marks the manager "dirty"; a retire/kill pass (CHECK → COVERAGE → KILL) then runs at most every `CLEANUP_INTERVAL`, so retirees do not wait for the next 10 m of movement.
 - A new chunk whose key is no longer in `new_chunk_set` when its task finishes is dropped instead of shown.
+
+## Horizon culling
+
+`ChunkManager.is_hidden(camera_pos, key, margin)` is true when a leaf's bounding sphere lies wholly in the shadow of the planet's solid inner ball: radius `occluder_radius = sea_level - bias_threshold / FLOOR_BIAS`, i.e. the surface is never closer to the centre than that (72 m below sea level with the default curves). It is conservative: the leaf has to sit inside the cone of view rays that touch the ball, behind the circle where they touch it. It assumes the camera may be anywhere within `CULL_MARGIN` (32 m) of the player, to cover the 10 m movement threshold, the leaf job and generation latency. It culls nothing when there is no noise, when the camera is within the margin of the ball (so the margin must stay below the ~72 m gap), or when the camera is near the leaf. Only the current world is culled; other planets keep their single root chunk.
+
+- **Culled leaves stay in `new_chunk_set`** (value `mask | CULLED_BIT`). Dropping them instead leaves their parents RETIRING forever, because the parent's volume is never fully covered (tested). `new_chunk_set` values must be read as `value & TRANSITION_MASK_BITS` (the mask) and `value & CULLED_BIT`.
+- Masks are computed **before** culling, so a culled neighbour still decides whether the leaf next to it gets transition cells.
+- A new culled leaf becomes an ACTIVE chunk with no task, mesh or node (like a provably empty one) and `is_culled = true`. `_cull_chunk()` does the same to an existing chunk: frees its `ChunkMesh` and collider, removes it from the tree, resets `built_transition_mask`. A chunk that is visible again (`is_culled` cleared in `_load_chunk`) is meshed through `_remesh_if_needed()`, which skips culled chunks. A chunk whose data arrives after it was culled drops the data in `_finish_chunk()`.
+- Measured effect (size 9, flying at the surface): 6–9% of the meshable leaves are culled at ground level, 13–18% at 300 m–3 km altitude; end-state meshes 866 → 774. The far hemisphere holds only ~3% of the meshable leaves (it is coarse); the rest is the fine ring around the player, which a worst-case ball can't prove hidden even though real terrain does hide most of it at ground level.
+- Not done: culling to the camera frustum (Godot already does that when rendering, and turning would force regeneration of the fine ring) and a far-plane test (the camera uses the default 4000 m far plane; it would hide a further 3–16% on planets of size 9–12).
+- Checks: `check_cull.gd` (safety rays through the real field, no near leaves culled, masks unchanged), `check_cull_flight.gd` (no holes while flying), `check_settle.gd` (end state equals a fresh load).
 
 ## Transvoxel notes
 
