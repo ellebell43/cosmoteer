@@ -113,9 +113,9 @@ func sample(x, y, z):
 func sample_grid(o, st, c):
 	n_sample += c * c * c
 	return super.sample_grid(o, st, c)
-func get_biome_color(p):
+func get_biome_color(p, f = 1.0):
 	n_color += 1
-	return super.get_biome_color(p)
+	return super.get_biome_color(p, f)
 """ % WN
 	s.reload()
 	return s.new(1, volume, load("res://environment/world-generation/terrain-params.gd").new())

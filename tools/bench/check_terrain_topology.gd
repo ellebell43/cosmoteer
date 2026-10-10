@@ -1,8 +1,8 @@
 extends SceneTree
 ## Is the terrain one clean surface over the planet? Casts radial rays through the real field and counts how often the field changes sign more than once along a ray (overhangs, caves and floating rock all show up that way, since a floating blob is crossed by a ray from outside three times or more). Also reports the steepest radial slope of the elevation: the surface can only fold where it exceeds 1.
 ## Parameter sets: the defaults, random ones, and the corners of every range (each value at one end of its range). With `overhang` forced to 0 every set must report 0 crossing problems.
-##   godot --headless --path . -s tools/bench/check_terrain_topology.gd -- <default|random|corners> <sets> <rays> [size] [seed] [overhang]
-## `overhang` overrides the value of TerrainParams.overhang in every set (default 0).
+##   godot --headless --path . -s tools/bench/check_terrain_topology.gd -- <default|random|corners> <sets> <rays> [size] [seed] [overhang] [overrides]
+## `overhang` overrides the value of TerrainParams.overhang in every set (default 0). `overrides` is a list like `terracing=0,mountain_warp=1` applied to every set after it is drawn, to find out which setting a failing set depends on.
 var started := false
 func _process(_d: float) -> bool:
 	if started: return false
@@ -14,6 +14,7 @@ func _process(_d: float) -> bool:
 	var size: int = int(args[3]) if args.size() > 3 else 9
 	var base_seed: int = int(args[4]) if args.size() > 4 else 1
 	var overhang: float = float(args[5]) if args.size() > 5 else 0.0
+	var overrides: String = args[6] if args.size() > 6 else ""
 	var noise_script: GDScript = load("res://environment/world-generation/world-noise.gd")
 	var params_script: GDScript = load("res://environment/world-generation/terrain-params.gd")
 	var rng := RandomNumberGenerator.new()
@@ -24,6 +25,9 @@ func _process(_d: float) -> bool:
 		var params = params_script.new()
 		if mode != "default": params.randomize_values(rng, mode == "corners")
 		params.overhang = overhang
+		for pair in overrides.split(",", false):
+			var parts := pair.split("=")
+			params.set(parts[0], float(parts[1]))
 		var wn = noise_script.new(base_seed + i, volume, params)
 		var multi := 0
 		var slopes := PackedFloat32Array()

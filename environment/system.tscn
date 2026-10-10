@@ -9,6 +9,7 @@
 
 [sub_resource type="Resource" id="Resource_terrain"]
 script = ExtResource("6_terrain")
+continent_count = 8.0
 
 [node name="System" type="Node3D" unique_id=1029309 node_paths=PackedStringArray("player")]
 script = ExtResource("1_br15j")

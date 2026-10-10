@@ -268,7 +268,9 @@ func _generate_mesh_data(corner_samples: PackedFloat32Array, transition_mask: in
 					var vertex: Vector3 = cell_corner_set[corner_a].lerp(cell_corner_set[corner_b], interpolation_ratio)
 
 					vertex_set[i] = vertex
-					vertex_color_set[i] = scalar.get_biome_color(vertex + offset)
+					vertex_color_set[i] = _vertex_color(vertex + offset, corner_samples,
+						x + (corner_a & 1), y + ((corner_a >> 2) & 1), z + ((corner_a >> 1) & 1),
+						x + (corner_b & 1), y + ((corner_b >> 2) & 1), z + ((corner_b >> 1) & 1), interpolation_ratio)
 				
 				## Using the vertex set and cell_data append vertices to the mesh_vertices array to create triangles and calculate flat normals.
 				var vertex_indices = TransvoxelLUT.REG_CELL_DATA[cell_class][1]
@@ -302,7 +304,7 @@ func _generate_mesh_data(corner_samples: PackedFloat32Array, transition_mask: in
 	# transition faces
 	for face in 6:
 		if (transition_mask >> face) & 1 == 1:
-			_construct_transition_data(transition_samples[face], face, mesh_vertices, mesh_normals, transition_mask, mesh_colors)
+			_construct_transition_data(transition_samples[face], face, mesh_vertices, mesh_normals, transition_mask, mesh_colors, corner_samples)
 
 	var surface_arrays: Array = []
 	surface_arrays.resize(Mesh.ARRAY_MAX)
@@ -318,7 +320,7 @@ func _generate_mesh_data(corner_samples: PackedFloat32Array, transition_mask: in
 	return array_mesh
 
 ## Create the transitional data for cells on the transition face of a chunk
-func _construct_transition_data(transition_samples: PackedFloat32Array, face_index: int, mesh_vertices: PackedVector3Array, mesh_normals: PackedVector3Array, transition_mask: int, mesh_colors: PackedColorArray) -> void:
+func _construct_transition_data(transition_samples: PackedFloat32Array, face_index: int, mesh_vertices: PackedVector3Array, mesh_normals: PackedVector3Array, transition_mask: int, mesh_colors: PackedColorArray, corner_samples: PackedFloat32Array) -> void:
 	var values_arr: PackedFloat32Array = []
 	values_arr.resize(13)
 	var transition_data_vertices: PackedVector3Array = []
@@ -409,7 +411,12 @@ func _construct_transition_data(transition_samples: PackedFloat32Array, face_ind
 				var vertex: Vector3 = transition_data_vertices[corner_a].lerp(transition_data_vertices[corner_b], interpolation_ratio)
 
 				actual_vertices[i] = vertex
-				actual_colors[i] = scalar.get_biome_color(vertex + offset)
+				# no edge of the regular grid here: use the corner nearest to the vertex
+				var nearest := (vertex / lod_step).round()
+				var nx := clampi(int(nearest.x), 0, size)
+				var ny := clampi(int(nearest.y), 0, size)
+				var nz := clampi(int(nearest.z), 0, size)
+				actual_colors[i] = _vertex_color(vertex + offset, corner_samples, nx, ny, nz, nx, ny, nz, 0.0)
 
 			## Using the vertex set and cell_data append vertices to the mesh_vertices array to create triangles and calculate flat normals.
 			var vertex_indices = TransvoxelLUT.TRANS_CELL_DATA[cell_class][1]
@@ -446,6 +453,32 @@ func _construct_transition_data(transition_samples: PackedFloat32Array, face_ind
 				mesh_normals.append(normal)
 				
 				i += 3
+
+## Color of a surface vertex at `world_vertex` (noise space) that lies between the grid corners (ax, ay, az) and (bx, by, bz) at `ratio` along the edge. Water does not care about the slope. On land, the slope is the gradient of the field, which `_corner_gradient()` reads from the samples that are already there (the vertex is blended from its two corners), so it costs no new sampling.
+func _vertex_color(world_vertex: Vector3, corner_samples: PackedFloat32Array, ax: int, ay: int, az: int, bx: int, by: int, bz: int, ratio: float) -> Color:
+	var up := world_vertex - scalar.center
+	var distance := up.length()
+	var flatness := 1.0
+	if distance > scalar.sea_level:
+		var gradient := _corner_gradient(corner_samples, ax, ay, az)
+		if ratio > 0.0: gradient = gradient.lerp(_corner_gradient(corner_samples, bx, by, bz), ratio)
+		var length := gradient.length()
+		if length > 0.000001: flatness = gradient.dot(up) / (length * distance)
+	return scalar.get_biome_color(world_vertex, flatness)
+
+## Gradient of the field at the grid corner (x, y, z), by differences of its neighbours (one-sided at the edge of the grid). It points out of the rock, so normalized it is the surface normal.
+func _corner_gradient(corner_samples: PackedFloat32Array, x: int, y: int, z: int) -> Vector3:
+	var index := x * x_stride + y * y_stride + z
+	var x_up := x_stride if x < size else 0
+	var x_down := x_stride if x > 0 else 0
+	var y_up := y_stride if y < size else 0
+	var y_down := y_stride if y > 0 else 0
+	var z_up := 1 if z < size else 0
+	var z_down := 1 if z > 0 else 0
+	return Vector3(
+		corner_samples[index + x_up] - corner_samples[index - x_down],
+		corner_samples[index + y_up] - corner_samples[index - y_down],
+		corner_samples[index + z_up] - corner_samples[index - z_down])
 
 ## Position of fine-grid point (`i`, `j`) on the face `face_index`, in chunk space. `i` and `j` run along the U and V axes of the face and count `lod_step` units each.
 func _transition_point(i: int, j: int, face_index: int) -> Vector3:

@@ -18,7 +18,7 @@ const RELIEF_RADIUS_FRACTION := 0.12
 ## Share of `peak_height` that the lowland under the mountains gets. The mountains get the rest.
 const LAND_BASE_SHARE := 0.2
 ## The radial slope that the mountains may add, as a fraction of 1 (1 is where the surface starts to fold). Divided by how much of the radial gradient the coherence leaves, it caps the mountain height at that fraction of the ridge spacing.
-const MOUNTAIN_RADIAL_SLOPE := 0.05
+const MOUNTAIN_RADIAL_SLOPE := 0.043
 ## Steepest slope (99.9th percentile, times the ridge spacing, per meter of mountain height) of the mountain shape at the default `erosion` and `ridge_sharpness`. `MOUNTAIN_RADIAL_SLOPE` was tuned for it; other settings scale the allowed height by `_mountain_gradient()` relative to it.
 const MOUNTAIN_REFERENCE_GRADIENT := 11.5
 ## Highest the mountains may get relative to their ridge spacing, however high the coherence.
@@ -31,14 +31,24 @@ const CONTINENT_RADIAL_SLOPE := 0.15
 const CONTINENT_TANGENTIAL_SLOPE := 1.0
 ## How soft the edge of a mountain range or a plain is, as a fraction of the smaller of the share it covers and the rest. A sharp edge multiplies the mountain height by a quickly changing mask, which is steep and folds the surface.
 const MASK_EDGE_SHARE := 0.25
+## The slope allowances of the coherent layers shrink towards this share when `radial_coherence` is low, because their share of the radial slope is then larger and the layers add up more often (low coherence is where the rare folds showed up in the sweeps).
+const LOW_COHERENCE_ALLOWANCE := 0.4
+## Surface flatness (the up component of the surface normal, 1 = level ground, 0.5 = 60 degrees) at which the land is fully grass, and at which it is fully stone. Between the two the colors blend.
+const FLATNESS_GRASS := 0.86
+const FLATNESS_STONE := 0.66
+## Height above the sea over which the water color fades into the land color, so the shore has no hard line.
+const SHORE_BLEND := 1.0
+## Stone starts at this share of the mountains' height above the sea and covers everything from `STONE_FULL_SHARE`.
+const STONE_START_SHARE := 0.4
+const STONE_FULL_SHARE := 0.7
 ## Highest the hills may get relative to their spacing (about 17 degrees at the steepest). Hills are full 3D, so unlike the mountains the coherence does not help them: at 0.1 their radial slope alone reached 0.6 for 1% of the points.
 const HILL_MAX_HEIGHT_RATIO := 0.05
 ## Wavelength of the small rocky roughness.
 const DETAIL_WAVELENGTH := 12.0
 ## Highest the detail may get relative to its wavelength.
 const DETAIL_MAX_HEIGHT_RATIO := 0.05
-## Ridge warp displacement for `mountain_warp` = 1, relative to the ridge spacing. The warp steepens the slopes a lot more than its size suggests (x2.5 at 0.1, x8 at 0.25 in the 99th percentile), so `get_limits()` lowers the mountains with it.
-const MOUNTAIN_WARP_AMPLITUDE := 0.1
+## Ridge warp displacement for `mountain_warp` = 1, relative to the ridge spacing. With the warp fractal off it does not steepen the slopes (measured to 1), so `get_limits()` does not lower the mountains for it.
+const MOUNTAIN_WARP_AMPLITUDE := 0.3
 ## The overhang term is at most this fraction of the mountain height.
 const OVERHANG_MAX_SHARE := 0.6
 ## `TerrainParams.overhang` times this is the height of the overhang term relative to its wavelength. The surface starts to fold when the height is about 0.3 of the wavelength, so overhangs appear from `overhang` 0.15. The range of `overhang` stops at 0.3 because detached rock starts beyond it.
@@ -128,12 +138,18 @@ var _terrace_step: float
 var _plains_fraction: float
 var _coherence: float
 
-# ======== BIOME COLORS ========
+# ======== TERRAIN COLORS ========
+# Placeholders until biomes exist. See `get_biome_color()`.
 var dark_blue := Color("#30618c")
 var blue := Color("#5696cf")
 var sand := Color("#f7f0b2")
 var green := Color("#7ae451")
-var gray := Color("#9c9c9c")
+var stone := Color("#9c9c9c")
+# Heights in meters above the sea radius, derived from the terrain in `_init()`.
+var _deep_water: float
+var _sand_height: float
+var _stone_start: float
+var _stone_end: float
 
 ## Radius of the sea and the largest elevation for a planet with the noise volume `volume` and `params`, without building the noise. `WorldNoise` is built from the same numbers.
 static func get_limits(volume: float, params: TerrainParams) -> Dictionary:
@@ -143,7 +159,7 @@ static func get_limits(volume: float, params: TerrainParams) -> Dictionary:
 	var peak := minf(params.peak_height, cap)
 	# The continent profile spans only a share of the noise (the ocean or the land) and is steeper for a sharp coast; short continent wavelengths (small planets) steepen it too.
 	var continent_wavelength := TAU * reference_radius / params.continent_count
-	var slope_room := minf(CONTINENT_TANGENTIAL_SLOPE, CONTINENT_RADIAL_SLOPE / maxf(1.0 - params.radial_coherence, 0.001))
+	var slope_room := minf(CONTINENT_TANGENTIAL_SLOPE, CONTINENT_RADIAL_SLOPE / maxf(1.0 - params.radial_coherence, 0.001)) * _coherence_allowance(params.radial_coherence)
 	var coast := 1.0 + 3.0 * params.coast_sharpness
 	var ocean := minf(params.ocean_depth, minf(cap, slope_room * continent_wavelength * params.ocean_coverage / (coast * CONTINENT_RANK_SLOPE)))
 	var land_base := minf(LAND_BASE_SHARE * peak, slope_room * continent_wavelength * (1.0 - params.ocean_coverage) / (coast * CONTINENT_RANK_SLOPE))
@@ -171,9 +187,12 @@ static func _terrace_steepening(terracing: float) -> float:
 static func _mountain_gradient(erosion: float, ridge_sharpness: float) -> float:
 	return (6.6 + 2.7 * (1.0 - erosion)) * (0.5 + 0.5 * ridge_sharpness)
 
+static func _coherence_allowance(coherence: float) -> float:
+	return lerpf(LOW_COHERENCE_ALLOWANCE, 1.0, clampf(coherence / 0.75, 0.0, 1.0))
+
 static func _mountain_height_limit(peak: float, params: TerrainParams) -> float:
-	var slope_limit := params.mountain_scale * minf(MOUNTAIN_MAX_HEIGHT_RATIO, MOUNTAIN_RADIAL_SLOPE / maxf(1.0 - params.radial_coherence, 0.01))
-	var steepening := _mountain_gradient(params.erosion, params.ridge_sharpness) / MOUNTAIN_REFERENCE_GRADIENT * (1.0 + 1.5 * params.mountain_warp) * _terrace_steepening(params.terracing)
+	var slope_limit := params.mountain_scale * minf(MOUNTAIN_MAX_HEIGHT_RATIO, MOUNTAIN_RADIAL_SLOPE / maxf(1.0 - params.radial_coherence, 0.01)) * _coherence_allowance(params.radial_coherence)
+	var steepening := _mountain_gradient(params.erosion, params.ridge_sharpness) / MOUNTAIN_REFERENCE_GRADIENT * _terrace_steepening(params.terracing)
 	return minf((1.0 - LAND_BASE_SHARE) * peak, slope_limit / steepening)
 
 func _init(_seed: int, volume: float, params: TerrainParams = null):
@@ -213,8 +232,10 @@ func _init(_seed: int, volume: float, params: TerrainParams = null):
 	if params.mountain_warp > 0.0:
 		mountain_noise.domain_warp_enabled = true
 		mountain_noise.domain_warp_type = FastNoiseLite.DOMAIN_WARP_SIMPLEX
+		# Godot defaults to a progressive warp fractal of 5 octaves with lacunarity 6, which adds jitter of a couple of meters to the surface.
+		mountain_noise.domain_warp_fractal_type = FastNoiseLite.DOMAIN_WARP_FRACTAL_NONE
 		mountain_noise.domain_warp_amplitude = params.mountain_warp * MOUNTAIN_WARP_AMPLITUDE * params.mountain_scale
-		mountain_noise.domain_warp_frequency = 1.0 / (4.0 * params.mountain_scale)
+		mountain_noise.domain_warp_frequency = 1.0 / (3.0 * params.mountain_scale)
 
 	# ======= HILL AND DETAIL NOISE =======
 	_setup_noise(ruggedness_noise, _seed, 3, FastNoiseLite.TYPE_SIMPLEX_SMOOTH, maxf(4.0 * params.hill_scale, 400.0), 2, FastNoiseLite.FRACTAL_FBM)
@@ -223,6 +244,12 @@ func _init(_seed: int, volume: float, params: TerrainParams = null):
 
 	# ======= OVERHANG NOISE =======
 	_setup_noise(overhang_noise, _seed, 6, FastNoiseLite.TYPE_SIMPLEX_SMOOTH, _overhang_wavelength(effective_mountain_height), 1, FastNoiseLite.FRACTAL_NONE)
+
+	_deep_water = maxf(0.6 * effective_ocean_depth, 2.0)
+	_sand_height = clampf(0.012 * max_elevation, 1.5, 5.0)
+	var mountain_top := effective_land_base + effective_mountain_height
+	_stone_start = STONE_START_SHARE * mountain_top
+	_stone_end = maxf(STONE_FULL_SHARE * mountain_top, _stone_start + 1.0)
 
 	_calibrate(_seed)
 
@@ -442,11 +469,12 @@ func get_elevation_at_point(_pos: Vector3) -> float:
 	_compute_row(_pos.x, _pos.y, _pos.z, 1.0, 1, out, 0, false)
 	return out[0]
 
-## Color for a point on the surface. Every surface point sits at `sea_level + elevation`, so the elevation comes from the distance to the center and needs no noise.
-func get_biome_color(_pos: Vector3) -> Color:
-	var elevation := _pos.distance_to(center) - sea_level
-	if elevation < 0.4 * min_elevation: return dark_blue
-	elif elevation < 0.0: return blue
-	elif elevation < clampf(0.01 * max_elevation, 0.5, 4.0): return sand
-	elif elevation < 0.55 * max_elevation: return green
-	else: return gray
+## Color for a point on the surface, from its elevation and how flat the surface is there (`flatness`: the component of the unit surface normal along the local up, 1 = level, 0 = a vertical wall). Below the sea it is blue, fading to dark blue with depth, whatever the slope. On land it is sand at the shore, otherwise grass, and stone on steep slopes and at high elevations. Every change is a gradient. A surface point sits at `sea_level + elevation`, so the elevation comes from the distance to the center and needs no noise.
+func get_biome_color(pos: Vector3, flatness := 1.0) -> Color:
+	var elevation := pos.distance_to(center) - sea_level
+	if elevation <= 0.0:
+		return blue.lerp(dark_blue, smoothstep(0.0, _deep_water, -elevation))
+	var color := green.lerp(sand, 1.0 - smoothstep(0.5 * _sand_height, 1.5 * _sand_height, elevation))
+	var stone_weight := maxf(1.0 - smoothstep(FLATNESS_STONE, FLATNESS_GRASS, flatness), smoothstep(_stone_start, _stone_end, elevation))
+	color = color.lerp(stone, stone_weight)
+	return blue.lerp(color, smoothstep(0.0, SHORE_BLEND, elevation))
